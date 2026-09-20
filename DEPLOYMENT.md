@@ -89,7 +89,7 @@ Expected response:
 Edit `client/.env`:
 
 ```env
-VITE_API_URL=https://YOUR-RENDER-SERVICE.onrender.com/api
+VITE_API_URL=https://blindcode-sympo.onrender.com/api
 ```
 
 Replace the placeholder with the actual Render URL. Do not put `GEMINI_API_KEY` in this file.
