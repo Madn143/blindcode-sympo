@@ -1,0 +1,2 @@
+export type EventSettings = { round1Started: boolean; round2Started: boolean; round1Finished: boolean; round2Finished: boolean };
+export type Question = { id: string; questionNo: number; language: string; code?: string; correctLine?: string; correctedLine?: string; description?: string; question?: string; starterCode?: string; expectedAnswer?: string; testCases?: string | null };
