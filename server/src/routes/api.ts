@@ -72,6 +72,36 @@ router.get("/questions/:round", requireAuth, async (request, response) => {
   }
 });
 
+router.get("/me/event", requireAuth, async (request: AuthenticatedRequest, response) => {
+  if (!request.user) {
+    response.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  try {
+    const [settingsSnapshot, profileSnapshot, round1Snapshot, round2Snapshot] = await Promise.all([
+      settingsRef.get(),
+      db.collection("users").doc(request.user.uid).get(),
+      db.collection("round1_answers").where("userId", "==", request.user.uid).get(),
+      db.collection("round2_answers").where("userId", "==", request.user.uid).get(),
+    ]);
+    const round1Answers: Array<{ id: string; score?: number; [key: string]: unknown }> = round1Snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
+    const round2Answers: Array<{ id: string; score?: number; [key: string]: unknown }> = round2Snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
+    const round1Score = round1Answers.reduce((total, answer) => total + Number(answer.score ?? 0), 0);
+    const round2Score = round2Answers.reduce((total, answer) => total + Number(answer.score ?? 0), 0);
+    response.json({
+      settings: settingsSnapshot.data() ?? { round1Started: true, round2Started: false, round1Finished: false, round2Finished: false },
+      profile: profileSnapshot.data() ?? { name: request.user.email ?? "Participant", collegeName: "" },
+      round1Answers,
+      round2Answers,
+      scores: { round1: round1Score, round2: round2Score, total: round1Score + round2Score },
+    });
+  } catch (error) {
+    console.error("Failed to load participant event", error);
+    response.status(500).json({ error: "Unable to load participant event." });
+  }
+});
+
 router.post("/submissions/round1", requireAuth, async (request: AuthenticatedRequest, response) => {
   const parsed = submissionSchema.safeParse(request.body);
   if (!parsed.success || !request.user) {
@@ -171,6 +201,38 @@ router.get("/admin/event", requireAuth, requireRole("admin"), async (_request, r
   } catch (error) {
     console.error("Failed to load admin settings", error);
     response.status(500).json({ error: "Unable to load event settings." });
+  }
+});
+
+router.get("/admin/leaderboard", requireAuth, requireRole("admin"), async (_request, response) => {
+  try {
+    const [usersSnapshot, round1Snapshot, round2Snapshot] = await Promise.all([
+      db.collection("users").get(),
+      db.collection("round1_answers").get(),
+      db.collection("round2_answers").get(),
+    ]);
+    const scores = new Map<string, { round1: number; round2: number }>();
+    for (const answer of round1Snapshot.docs) {
+      const data = answer.data();
+      const current = scores.get(String(data.userId)) ?? { round1: 0, round2: 0 };
+      current.round1 += Number(data.score ?? 0);
+      scores.set(String(data.userId), current);
+    }
+    for (const answer of round2Snapshot.docs) {
+      const data = answer.data();
+      const current = scores.get(String(data.userId)) ?? { round1: 0, round2: 0 };
+      current.round2 += Number(data.score ?? 0);
+      scores.set(String(data.userId), current);
+    }
+    const participants = usersSnapshot.docs.map((document) => {
+      const data = document.data();
+      const score = scores.get(document.id) ?? { round1: 0, round2: 0 };
+      return { id: document.id, name: data.name ?? data.email ?? "Participant", collegeName: data.collegeName ?? "", ...score, total: score.round1 + score.round2 };
+    }).sort((left, right) => right.total - left.total || left.name.localeCompare(right.name));
+    response.json(participants);
+  } catch (error) {
+    console.error("Failed to load leaderboard", error);
+    response.status(500).json({ error: "Unable to load leaderboard." });
   }
 });
 
