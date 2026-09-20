@@ -57,6 +57,15 @@ GEMINI_MODEL=gemini-2.5-flash
 CLIENT_ORIGIN=https://blindcode-2f539.web.app
 ```
 
+The Firebase values for this project are:
+
+```env
+FIREBASE_PROJECT_ID=blindcode-2f539
+FIREBASE_CLIENT_EMAIL=firebase-adminsdk-fbsvc@blindcode-2f539.iam.gserviceaccount.com
+```
+
+Keep `FIREBASE_PRIVATE_KEY` and `GEMINI_API_KEY` secret. The local server can use `GOOGLE_APPLICATION_CREDENTIALS=../blindcode-2f539-firebase-adminsdk-fbsvc-4495f49514.json` instead of copying the private key into `.env`.
+
 After deployment, copy the Render URL, for example:
 
 ```text
