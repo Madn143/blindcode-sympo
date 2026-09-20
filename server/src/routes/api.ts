@@ -8,7 +8,7 @@ import { evaluateRound2Answer } from "../services/aiEvaluator.js";
 const router = Router();
 const submissionSchema = z.object({
   questionId: z.string().min(1),
-  errorLine: z.string().trim().min(1),
+  correctedLine: z.string().trim().min(1),
   description: z.string().trim().min(1),
 });
 const round2Schema = z.object({ questionId: z.string().min(1), answer: z.string().trim().min(1) });
@@ -119,7 +119,7 @@ router.post("/submissions/round1", requireAuth, async (request: AuthenticatedReq
     }
 
     const question = questionSnapshot.data()!;
-    const score = parsed.data.errorLine.trim() === String(question.correctLine).trim() ? 10 : 0;
+    const score = normalizeCode(parsed.data.correctedLine) === normalizeCode(String(question.correctedLine)) ? 10 : 0;
     const answerRef = db.collection("round1_answers").doc(`${request.user.uid}_${parsed.data.questionId}`);
     await answerRef.set({ ...parsed.data, correctedLine: "", userId: request.user.uid, score, submittedAt: FieldValue.serverTimestamp() }, { merge: true });
     response.status(201).json({ score });

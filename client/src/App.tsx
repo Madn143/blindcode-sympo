@@ -36,7 +36,7 @@ const rules = [
 function Logo({ onClick }: { onClick?: () => void }) {
   return (
     <button className="logo" onClick={onClick}>
-      CODE<span>⚡</span>ARENA
+      ELVARIX<span>’</span>26
     </button>
   );
 }
@@ -362,7 +362,7 @@ function EventPage({
     Record<
       string,
       {
-        errorLine: string;
+        correctedLine: string;
         description: string;
         answer: string;
       }
@@ -413,7 +413,7 @@ function EventPage({
   function value(id: string, answer?: Answer) {
     return (
       values[id] ?? {
-        errorLine: answer?.errorLine ?? "",
+        correctedLine: answer?.correctedLine ?? "",
         description: answer?.description ?? "",
         answer: answer?.answer ?? "",
       }
@@ -427,7 +427,7 @@ function EventPage({
         method: "POST",
         body: JSON.stringify({
           questionId: question.id,
-          errorLine: current.errorLine,
+          correctedLine: current.correctedLine,
           description: current.description,
         }),
       });
@@ -525,13 +525,13 @@ function EventPage({
                     <br />
                     {question.description}
                   </div>
-                  <label>Enter the correct line number — 10 Marks</label>
+                  <label>Enter the corrected code — 10 Marks</label>
                   <input
                     className="legacy-input"
-                    placeholder="Example: 6"
-                    value={current.errorLine}
+                    placeholder="Enter corrected code"
+                    value={current.correctedLine}
                     onChange={(e) =>
-                      update(question.id, "errorLine", e.target.value)
+                      update(question.id, "correctedLine", e.target.value)
                     }
                   />
                   <label>Explanation</label>
@@ -658,7 +658,7 @@ function QuestionEditor({ round, question, onChange, onSave }: { round: "round1"
   const field = (key: keyof Question, label: string, multiline = false) => multiline
     ? <label>{label}<textarea className="legacy-input code-input" value={String(question[key] ?? "")} onChange={(event) => onChange({ ...question, [key]: event.target.value })} /></label>
     : <label>{label}<input className="legacy-input" value={String(question[key] ?? "")} onChange={(event) => onChange({ ...question, [key]: event.target.value })} /></label>;
-  return <article className="question-editor"><b>Question {question.questionNo}</b>{round === "round1" ? <>{field("code", "Code", true)}{field("correctLine", "Correct line")}{field("description", "Description", true)}</> : <>{field("question", "Prompt", true)}{field("starterCode", "Starter code", true)}{field("expectedAnswer", "Expected answer", true)}{field("testCases", "Test cases", true)}</>}<button className="gradient-button small" onClick={onSave}>Save Question</button></article>;
+  return <article className="question-editor"><b>Question {question.questionNo}</b>{round === "round1" ? <>{field("code", "Code", true)}{field("correctedLine", "Corrected code")}{field("description", "Description", true)}</> : <>{field("question", "Prompt", true)}{field("starterCode", "Starter code", true)}{field("expectedAnswer", "Expected answer", true)}{field("testCases", "Test cases", true)}</>}<button className="gradient-button small" onClick={onSave}>Save Question</button></article>;
 }
 function AdminPage({
   setPage,
@@ -715,7 +715,7 @@ function AdminPage({
   }
   async function saveQuestion(round: "round1" | "round2", question: Question) {
     const body = round === "round1"
-      ? { questionNo: question.questionNo, language: question.language, code: question.code ?? "", correctLine: question.correctLine ?? "", description: question.description ?? "" }
+      ? { questionNo: question.questionNo, language: question.language, code: question.code ?? "", correctedLine: question.correctedLine ?? "", description: question.description ?? "" }
       : { questionNo: question.questionNo, language: question.language, question: question.question ?? "", starterCode: question.starterCode ?? "", expectedAnswer: question.expectedAnswer ?? "", testCases: question.testCases ?? "" };
     try { await api(`/admin/questions/${round}/${question.id}`, { method: "PATCH", body: JSON.stringify(body) }); setMessage(`Question ${question.questionNo} updated.`); } catch (err) { setMessage(err instanceof Error ? err.message : "Question update failed."); }
   }

@@ -1,5 +1,5 @@
 export type EventSettings = { round1Started: boolean; round2Started: boolean; round1Finished: boolean; round2Finished: boolean };
-export type Question = { id: string; questionNo: number; language: string; code?: string; correctLine?: string; description?: string; question?: string; starterCode?: string; expectedAnswer?: string; testCases?: string | null };
-export type Answer = { questionId: string; errorLine?: string; description?: string; answer?: string; score?: number; syntaxErrors?: number; logicalErrors?: number; evaluated?: boolean; aiFeedback?: string | null };
+export type Question = { id: string; questionNo: number; language: string; code?: string; correctLine?: string; correctedLine?: string; description?: string; question?: string; starterCode?: string; expectedAnswer?: string; testCases?: string | null };
+export type Answer = { questionId: string; correctedLine?: string; description?: string; answer?: string; score?: number; syntaxErrors?: number; logicalErrors?: number; evaluated?: boolean; aiFeedback?: string | null };
 export type ParticipantEvent = { settings: EventSettings; profile: { name: string; collegeName: string; round1Completed?: boolean; round1Qualified?: boolean; round1Score?: number }; round1Answers: Answer[]; round2Answers: Answer[]; scores: { round1: number; round2: number; total: number } };
 export type Participant = { id: string; name: string; collegeName: string; round1: number; round2: number; total: number };
