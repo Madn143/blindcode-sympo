@@ -9,7 +9,6 @@ const router = Router();
 const submissionSchema = z.object({
   questionId: z.string().min(1),
   errorLine: z.string().trim().min(1),
-  correctedLine: z.string().trim().min(1),
   description: z.string().trim().min(1),
 });
 const round2Schema = z.object({ questionId: z.string().min(1), answer: z.string().trim().min(1) });
@@ -55,7 +54,7 @@ router.put("/profile", requireAuth, async (request: AuthenticatedRequest, respon
   }
 });
 
-router.get("/questions/:round", requireAuth, async (request, response) => {
+router.get("/questions/:round", requireAuth, async (request: AuthenticatedRequest, response) => {
   const collection = request.params.round === "round1" ? "round1_questions" :
     request.params.round === "round2" ? "round2_questions" : null;
   if (!collection) {
@@ -65,7 +64,10 @@ router.get("/questions/:round", requireAuth, async (request, response) => {
 
   try {
     const snapshot = await db.collection(collection).orderBy("questionNo").get();
-    response.json(snapshot.docs.map((document) => ({ id: document.id, ...document.data() })));
+    const questions: Array<{ id: string; questionNo?: number; [key: string]: unknown }> = snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
+    const seed = Array.from(String(request.user?.uid ?? "")).reduce((total, character) => total + character.charCodeAt(0), 0) + new Date().getUTCFullYear();
+    questions.sort((left, right) => ((seed * Number(left.questionNo ?? 0) + 17) % 997) - ((seed * Number(right.questionNo ?? 0) + 17) % 997));
+    response.json(questions);
   } catch (error) {
     console.error("Failed to load questions", error);
     response.status(500).json({ error: "Unable to load questions." });
@@ -117,10 +119,9 @@ router.post("/submissions/round1", requireAuth, async (request: AuthenticatedReq
     }
 
     const question = questionSnapshot.data()!;
-    const score = (parsed.data.errorLine.trim() === String(question.correctLine).trim() ? 5 : 0) +
-      (normalizeCode(parsed.data.correctedLine) === normalizeCode(String(question.correctedLine)) ? 5 : 0);
+    const score = parsed.data.errorLine.trim() === String(question.correctLine).trim() ? 10 : 0;
     const answerRef = db.collection("round1_answers").doc(`${request.user.uid}_${parsed.data.questionId}`);
-    await answerRef.set({ ...parsed.data, userId: request.user.uid, score, submittedAt: FieldValue.serverTimestamp() }, { merge: true });
+    await answerRef.set({ ...parsed.data, correctedLine: "", userId: request.user.uid, score, submittedAt: FieldValue.serverTimestamp() }, { merge: true });
     response.status(201).json({ score });
   } catch (error) {
     console.error("Failed to submit round 1 answer", error);
@@ -292,7 +293,7 @@ router.get("/admin/qualifiers", requireAuth, requireRole("admin"), async (_reque
 
 const round1QuestionUpdate = z.object({
   questionNo: z.number().int().positive().optional(), language: z.string().trim().min(1).optional(),
-  code: z.string().optional(), correctLine: z.string().optional(), correctedLine: z.string().optional(), description: z.string().optional(),
+  code: z.string().optional(), correctLine: z.string().optional(), description: z.string().optional(),
 });
 const round2QuestionUpdate = z.object({
   questionNo: z.number().int().positive().optional(), language: z.string().trim().min(1).optional(),

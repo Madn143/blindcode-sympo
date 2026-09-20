@@ -251,6 +251,10 @@ function Dashboard({
 }) {
   const [showRules, setShowRules] = useState(false);
   const [agreed, setAgreed] = useState(false);
+  async function startRound() {
+    await document.documentElement.requestFullscreen?.().catch(() => undefined);
+    setPage("round1");
+  }
   return (
     <div className="dashboard-page">
       <Header
@@ -312,7 +316,7 @@ function Dashboard({
             <button
               className="gradient-button"
               disabled={!agreed}
-              onClick={() => setPage("round1")}
+              onClick={startRound}
             >
               I AGREE &amp; START EVENT
             </button>
@@ -359,13 +363,36 @@ function EventPage({
       string,
       {
         errorLine: string;
-        correctedLine: string;
         description: string;
         answer: string;
       }
     >
   >({});
   const [completion, setCompletion] = useState<{ score: number; qualified: boolean } | null>(null);
+  const [exitWarning, setExitWarning] = useState("");
+  const exitCount = useState({ value: 0 })[0];
+  useEffect(() => {
+    const enterExam = () => document.documentElement.requestFullscreen?.().catch(() => undefined);
+    const onFullscreenChange = () => {
+      if (!document.fullscreenElement) {
+        exitCount.value += 1;
+        if (exitCount.value === 1) {
+          setExitWarning("Fullscreen was exited. Press Escape again and the round will restart.");
+          document.documentElement.requestFullscreen?.().catch(() => undefined);
+        }
+        else { setExitWarning("The round was reset because fullscreen was exited twice."); setPage("dashboard"); }
+      }
+    };
+    const blockExamActions = (event: MouseEvent | KeyboardEvent) => {
+      if (event instanceof MouseEvent) event.preventDefault();
+      if (event instanceof KeyboardEvent && (event.key === "F12" || (event.ctrlKey && event.shiftKey && ["i", "j", "c"].includes(event.key.toLowerCase())))) event.preventDefault();
+    };
+    enterExam();
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    document.addEventListener("contextmenu", blockExamActions as EventListener);
+    document.addEventListener("keydown", blockExamActions as EventListener);
+    return () => { document.removeEventListener("fullscreenchange", onFullscreenChange); document.removeEventListener("contextmenu", blockExamActions as EventListener); document.removeEventListener("keydown", blockExamActions as EventListener); };
+  }, [exitCount, setPage]);
   useEffect(() => {
     Promise.all([
       api<Question[]>("/questions/round1"),
@@ -387,7 +414,6 @@ function EventPage({
     return (
       values[id] ?? {
         errorLine: answer?.errorLine ?? "",
-        correctedLine: answer?.correctedLine ?? "",
         description: answer?.description ?? "",
         answer: answer?.answer ?? "",
       }
@@ -402,7 +428,6 @@ function EventPage({
         body: JSON.stringify({
           questionId: question.id,
           errorLine: current.errorLine,
-          correctedLine: current.correctedLine,
           description: current.description,
         }),
       });
@@ -462,6 +487,7 @@ function EventPage({
         onSignOut={() => signOut(clientAuth)}
       />
       <div className="event-page">
+        {exitWarning && <div className="alert-error event-message">{exitWarning}</div>}
         <section className="event-hero">
           <h1>
             BLIND <span>CODING</span>
@@ -499,22 +525,13 @@ function EventPage({
                     <br />
                     {question.description}
                   </div>
-                  <label>1. Enter the error line number</label>
+                  <label>Enter the correct line number — 10 Marks</label>
                   <input
                     className="legacy-input"
                     placeholder="Example: 6"
                     value={current.errorLine}
                     onChange={(e) =>
                       update(question.id, "errorLine", e.target.value)
-                    }
-                  />
-                  <label>2. Enter the corrected error line</label>
-                  <input
-                    className="legacy-input"
-                    placeholder="Enter corrected code line"
-                    value={current.correctedLine}
-                    onChange={(e) =>
-                      update(question.id, "correctedLine", e.target.value)
                     }
                   />
                   <label>Explanation</label>
@@ -641,7 +658,7 @@ function QuestionEditor({ round, question, onChange, onSave }: { round: "round1"
   const field = (key: keyof Question, label: string, multiline = false) => multiline
     ? <label>{label}<textarea className="legacy-input code-input" value={String(question[key] ?? "")} onChange={(event) => onChange({ ...question, [key]: event.target.value })} /></label>
     : <label>{label}<input className="legacy-input" value={String(question[key] ?? "")} onChange={(event) => onChange({ ...question, [key]: event.target.value })} /></label>;
-  return <article className="question-editor"><b>Question {question.questionNo}</b>{round === "round1" ? <>{field("code", "Code", true)}{field("correctLine", "Correct line")}{field("correctedLine", "Corrected line")}{field("description", "Description", true)}</> : <>{field("question", "Prompt", true)}{field("starterCode", "Starter code", true)}{field("expectedAnswer", "Expected answer", true)}{field("testCases", "Test cases", true)}</>}<button className="gradient-button small" onClick={onSave}>Save Question</button></article>;
+  return <article className="question-editor"><b>Question {question.questionNo}</b>{round === "round1" ? <>{field("code", "Code", true)}{field("correctLine", "Correct line")}{field("description", "Description", true)}</> : <>{field("question", "Prompt", true)}{field("starterCode", "Starter code", true)}{field("expectedAnswer", "Expected answer", true)}{field("testCases", "Test cases", true)}</>}<button className="gradient-button small" onClick={onSave}>Save Question</button></article>;
 }
 function AdminPage({
   setPage,
@@ -698,7 +715,7 @@ function AdminPage({
   }
   async function saveQuestion(round: "round1" | "round2", question: Question) {
     const body = round === "round1"
-      ? { questionNo: question.questionNo, language: question.language, code: question.code ?? "", correctLine: question.correctLine ?? "", correctedLine: question.correctedLine ?? "", description: question.description ?? "" }
+      ? { questionNo: question.questionNo, language: question.language, code: question.code ?? "", correctLine: question.correctLine ?? "", description: question.description ?? "" }
       : { questionNo: question.questionNo, language: question.language, question: question.question ?? "", starterCode: question.starterCode ?? "", expectedAnswer: question.expectedAnswer ?? "", testCases: question.testCases ?? "" };
     try { await api(`/admin/questions/${round}/${question.id}`, { method: "PATCH", body: JSON.stringify(body) }); setMessage(`Question ${question.questionNo} updated.`); } catch (err) { setMessage(err instanceof Error ? err.message : "Question update failed."); }
   }
