@@ -18,7 +18,7 @@ import type {
 } from "./types";
 import "./index.css";
 
-type Page = "home" | "login" | "register" | "dashboard" | "event" | "admin";
+type Page = "home" | "login" | "register" | "dashboard" | "round1" | "round1-result" | "round2" | "admin";
 
 const rules = [
   "Participants must use only the provided system and coding environment.",
@@ -312,7 +312,7 @@ function Dashboard({
             <button
               className="gradient-button"
               disabled={!agreed}
-              onClick={() => setPage("event")}
+              onClick={() => setPage("round1")}
             >
               I AGREE &amp; START EVENT
             </button>
@@ -344,10 +344,12 @@ function EventPage({
   data,
   setPage,
   onRefresh,
+  round,
 }: {
   data: ParticipantEvent;
   setPage: (page: Page) => void;
   onRefresh: () => void;
+  round: "round1" | "round2";
 }) {
   const [questions1, setQuestions1] = useState<Question[]>([]);
   const [questions2, setQuestions2] = useState<Question[]>([]);
@@ -363,6 +365,7 @@ function EventPage({
       }
     >
   >({});
+  const [completion, setCompletion] = useState<{ score: number; qualified: boolean } | null>(null);
   useEffect(() => {
     Promise.all([
       api<Question[]>("/questions/round1"),
@@ -431,6 +434,16 @@ function EventPage({
       setMessage(err instanceof Error ? err.message : "Evaluation failed.");
     }
   }
+  async function completeRound1() {
+    try {
+      const result = await api<{ score: number; qualified: boolean }>("/submissions/round1/complete", { method: "POST" });
+      setCompletion(result);
+      onRefresh();
+      setPage("round1-result");
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Unable to complete Round 1.");
+    }
+  }
   function update(
     id: string,
     key: keyof ReturnType<typeof value>,
@@ -459,7 +472,7 @@ function EventPage({
         {message && (
           <div className="alert-success event-message">{message}</div>
         )}
-        <section className="round-section">
+        {round === "round1" && <section className="round-section">
           <div className="round-heading">
             <h2>Round 1 — Debugging</h2>
             <span className="live-badge">
@@ -479,7 +492,6 @@ function EventPage({
                 <article className="question-card" key={question.id}>
                   <div className="question-top">
                     <b>Question {question.questionNo}</b>
-                    <span>10 Marks</span>
                   </div>
                   <pre>{question.code}</pre>
                   <div className="description">
@@ -487,7 +499,7 @@ function EventPage({
                     <br />
                     {question.description}
                   </div>
-                  <label>1. Enter the error line number — 5 Marks</label>
+                  <label>1. Enter the error line number</label>
                   <input
                     className="legacy-input"
                     placeholder="Example: 6"
@@ -496,7 +508,7 @@ function EventPage({
                       update(question.id, "errorLine", e.target.value)
                     }
                   />
-                  <label>2. Enter the corrected error line — 5 Marks</label>
+                  <label>2. Enter the corrected error line</label>
                   <input
                     className="legacy-input"
                     placeholder="Enter corrected code line"
@@ -529,8 +541,9 @@ function EventPage({
               );
             })
           )}
-        </section>
-        <section className="round-section">
+          <button className="gradient-button complete-round" onClick={completeRound1}>Complete Round 1</button>
+        </section>}
+        {round === "round2" && <section className="round-section">
           <div className="round-heading">
             <h2>Round 2 — Blind Coding</h2>
             <span
@@ -556,7 +569,6 @@ function EventPage({
                 <article className="question-card" key={question.id}>
                   <div className="question-top">
                     <b>Question {question.questionNo}</b>
-                    <span>25 Marks</span>
                   </div>
                   <h3>{question.question}</h3>
                   <div className="description">
@@ -607,7 +619,7 @@ function EventPage({
               );
             })
           )}
-        </section>
+        </section>}
       </div>
     </>
   );
@@ -620,6 +632,16 @@ function Locked({ title, text }: { title: string; text: string }) {
       <p>{text}</p>
     </div>
   );
+}
+function Round1Result({ data, setPage }: { data: ParticipantEvent; setPage: (page: Page) => void }) {
+  const qualified = data.profile.round1Qualified === true;
+  return <><Header profile={data.profile} onHome={() => setPage("dashboard")} onSignOut={() => signOut(clientAuth)} /><main className="dashboard-main"><div className="dashboard-card"><div className="badge">Round 1 Evaluation</div><h1>{qualified ? "You qualified!" : "Round 1 complete"}</h1><p>Your Round 1 score is <strong>{data.scores.round1} / 100</strong>. The qualifying threshold is above 40%.</p><div className={qualified ? "alert-success" : "alert-error"}>{qualified ? "PASS — you can continue to Round 2 when the administrator starts it." : "FAIL — you did not qualify for Round 2."}</div>{qualified && <button className="gradient-button" disabled={!data.settings.round2Started} onClick={() => setPage("round2")}>{data.settings.round2Started ? "NEXT: ROUND 2" : "WAIT FOR ROUND 2"}</button>}</div></main></>;
+}
+function QuestionEditor({ round, question, onChange, onSave }: { round: "round1" | "round2"; question: Question; onChange: (question: Question) => void; onSave: () => void }) {
+  const field = (key: keyof Question, label: string, multiline = false) => multiline
+    ? <label>{label}<textarea className="legacy-input code-input" value={String(question[key] ?? "")} onChange={(event) => onChange({ ...question, [key]: event.target.value })} /></label>
+    : <label>{label}<input className="legacy-input" value={String(question[key] ?? "")} onChange={(event) => onChange({ ...question, [key]: event.target.value })} /></label>;
+  return <article className="question-editor"><b>Question {question.questionNo}</b>{round === "round1" ? <>{field("code", "Code", true)}{field("correctLine", "Correct line")}{field("correctedLine", "Corrected line")}{field("description", "Description", true)}</> : <>{field("question", "Prompt", true)}{field("starterCode", "Starter code", true)}{field("expectedAnswer", "Expected answer", true)}{field("testCases", "Test cases", true)}</>}<button className="gradient-button small" onClick={onSave}>Save Question</button></article>;
 }
 function AdminPage({
   setPage,
@@ -635,15 +657,24 @@ function AdminPage({
     round2Finished: false,
   });
   const [participants, setParticipants] = useState<Participant[]>([]);
+  const [qualifiers, setQualifiers] = useState<Array<{ id: string; name?: string; collegeName?: string; round1Score?: number }>>([]);
+  const [questions1, setQuestions1] = useState<Question[]>([]);
+  const [questions2, setQuestions2] = useState<Question[]>([]);
   const [message, setMessage] = useState("");
   async function refresh() {
     try {
-      const [event, leaderboard] = await Promise.all([
+      const [event, leaderboard, passed, one, two] = await Promise.all([
         api<EventSettings>("/admin/event"),
         api<Participant[]>("/admin/leaderboard"),
+        api<Array<{ id: string; name?: string; collegeName?: string; round1Score?: number }>>("/admin/qualifiers"),
+        api<Question[]>("/questions/round1"),
+        api<Question[]>("/questions/round2"),
       ]);
       setSettings(event);
       setParticipants(leaderboard);
+      setQualifiers(passed);
+      setQuestions1(one);
+      setQuestions2(two);
     } catch (err) {
       setMessage(
         err instanceof Error ? err.message : "Unable to load admin page.",
@@ -664,6 +695,12 @@ function AdminPage({
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "Update failed.");
     }
+  }
+  async function saveQuestion(round: "round1" | "round2", question: Question) {
+    const body = round === "round1"
+      ? { questionNo: question.questionNo, language: question.language, code: question.code ?? "", correctLine: question.correctLine ?? "", correctedLine: question.correctedLine ?? "", description: question.description ?? "" }
+      : { questionNo: question.questionNo, language: question.language, question: question.question ?? "", starterCode: question.starterCode ?? "", expectedAnswer: question.expectedAnswer ?? "", testCases: question.testCases ?? "" };
+    try { await api(`/admin/questions/${round}/${question.id}`, { method: "PATCH", body: JSON.stringify(body) }); setMessage(`Question ${question.questionNo} updated.`); } catch (err) { setMessage(err instanceof Error ? err.message : "Question update failed."); }
   }
   return (
     <>
@@ -777,6 +814,14 @@ function AdminPage({
             </tbody>
           </table>
         </div>
+        <section className="admin-editor">
+          <h2>Round 1 Qualified Participants</h2>
+          {qualifiers.length === 0 ? <p>No participants have qualified yet.</p> : <ul>{qualifiers.map((student) => <li key={student.id}>{student.name ?? "Participant"} — {student.collegeName ?? ""} — {student.round1Score ?? 0} / 100</li>)}</ul>}
+          <h2>Edit Round 1 Questions</h2>
+          {questions1.map((question) => <QuestionEditor key={question.id} round="round1" question={question} onChange={(next) => setQuestions1((items) => items.map((item) => item.id === question.id ? next : item))} onSave={() => saveQuestion("round1", question)} />)}
+          <h2>Edit Round 2 Questions</h2>
+          {questions2.map((question) => <QuestionEditor key={question.id} round="round2" question={question} onChange={(next) => setQuestions2((items) => items.map((item) => item.id === question.id ? next : item))} onSave={() => saveQuestion("round2", question)} />)}
+        </section>
       </div>
     </>
   );
@@ -840,14 +885,16 @@ export default function App() {
       <AdminPage setPage={setPage} onSignOut={() => signOut(clientAuth)} />
     );
   if (!event) return <div className="loading-page">Loading...</div>;
-  if (page === "event")
+  if (page === "round1" || page === "round2")
     return (
       <EventPage
         data={event}
         setPage={setPage}
         onRefresh={() => loadEvent().catch(() => undefined)}
+        round={page}
       />
     );
+  if (page === "round1-result") return <Round1Result data={event} setPage={setPage} />;
   return (
     <Dashboard
       profile={event.profile}

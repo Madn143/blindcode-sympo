@@ -44,6 +44,8 @@ export type Round2Answer = {
   answer: string;
   syntaxErrors: number;
   logicalErrors: number;
+  logicCorrect: boolean;
+  outputCorrect: boolean;
   syntaxPenalty: number;
   logicalPenalty: number;
   score: number;

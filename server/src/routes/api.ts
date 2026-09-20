@@ -137,8 +137,13 @@ router.post("/submissions/round2", requireAuth, async (request: AuthenticatedReq
 
   try {
     const settingsSnapshot = await settingsRef.get();
+    const profileSnapshot = await db.collection("users").doc(request.user.uid).get();
     if (settingsSnapshot.data()?.round2Started !== true) {
       response.status(409).json({ error: "Round 2 has not been started by the administrator." });
+      return;
+    }
+    if (profileSnapshot.data()?.round1Qualified !== true) {
+      response.status(403).json({ error: "You must pass Round 1 before entering Round 2." });
       return;
     }
 
@@ -176,7 +181,11 @@ router.post("/submissions/round2", requireAuth, async (request: AuthenticatedReq
 
     const syntaxPenalty = evaluation.syntax_errors * 2;
     const logicalPenalty = evaluation.logical_errors * 10;
-    const score = Math.max(0, 25 - syntaxPenalty - logicalPenalty);
+    const score = !evaluation.logic_correct || !evaluation.output_correct
+      ? 0
+      : evaluation.syntax_errors > 0
+        ? 18
+        : 25;
     await answerRef.update({
       syntaxErrors: evaluation.syntax_errors,
       logicalErrors: evaluation.logical_errors,
@@ -184,6 +193,8 @@ router.post("/submissions/round2", requireAuth, async (request: AuthenticatedReq
       logicalPenalty,
       score,
       aiFeedback: evaluation.feedback,
+      logicCorrect: evaluation.logic_correct,
+      outputCorrect: evaluation.output_correct,
       evaluated: true,
       evaluatedAt: Timestamp.now(),
     });
@@ -191,6 +202,39 @@ router.post("/submissions/round2", requireAuth, async (request: AuthenticatedReq
   } catch (error) {
     console.error("Failed to submit round 2 answer", error);
     response.status(500).json({ error: "Unable to save round 2 submission." });
+  }
+});
+
+router.post("/submissions/round1/complete", requireAuth, async (request: AuthenticatedRequest, response) => {
+  if (!request.user) {
+    response.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  try {
+    const [questionsSnapshot, answersSnapshot] = await Promise.all([
+      db.collection("round1_questions").get(),
+      db.collection("round1_answers").where("userId", "==", request.user.uid).get(),
+    ]);
+    const requiredQuestionIds = new Set(questionsSnapshot.docs.map((question) => question.id));
+    const answers = answersSnapshot.docs.map((answer) => answer.data());
+    const answeredQuestionIds = new Set(answers.map((answer) => String(answer.questionId)));
+    if (answeredQuestionIds.size < requiredQuestionIds.size || [...requiredQuestionIds].some((id) => !answeredQuestionIds.has(id))) {
+      response.status(409).json({ error: "Submit an answer for every Round 1 question before completing the round." });
+      return;
+    }
+    const score = answers.reduce((total, answer) => total + Number(answer.score ?? 0), 0);
+    const qualified = score > 40;
+    await db.collection("users").doc(request.user.uid).set({
+      round1Completed: true,
+      round1Score: score,
+      round1Qualified: qualified,
+      round1CompletedAt: Timestamp.now(),
+    }, { merge: true });
+    response.json({ score, qualified, threshold: 40 });
+  } catch (error) {
+    console.error("Failed to complete round 1", error);
+    response.status(500).json({ error: "Unable to complete Round 1." });
   }
 });
 
@@ -236,6 +280,48 @@ router.get("/admin/leaderboard", requireAuth, requireRole("admin"), async (_requ
   }
 });
 
+router.get("/admin/qualifiers", requireAuth, requireRole("admin"), async (_request, response) => {
+  try {
+    const snapshot = await db.collection("users").where("round1Qualified", "==", true).get();
+    response.json(snapshot.docs.map((document) => ({ id: document.id, ...document.data() })));
+  } catch (error) {
+    console.error("Failed to load Round 1 qualifiers", error);
+    response.status(500).json({ error: "Unable to load Round 1 qualifiers." });
+  }
+});
+
+const round1QuestionUpdate = z.object({
+  questionNo: z.number().int().positive().optional(), language: z.string().trim().min(1).optional(),
+  code: z.string().optional(), correctLine: z.string().optional(), correctedLine: z.string().optional(), description: z.string().optional(),
+});
+const round2QuestionUpdate = z.object({
+  questionNo: z.number().int().positive().optional(), language: z.string().trim().min(1).optional(),
+  question: z.string().optional(), starterCode: z.string().optional(), expectedAnswer: z.string().optional(), testCases: z.string().nullable().optional(),
+});
+
+router.patch("/admin/questions/:round/:questionId", requireAuth, requireRole("admin"), async (request, response) => {
+  const collection = request.params.round === "round1" ? "round1_questions" : request.params.round === "round2" ? "round2_questions" : null;
+  const schema = request.params.round === "round1" ? round1QuestionUpdate : round2QuestionUpdate;
+  const parsed = schema.safeParse(request.body);
+  if (!collection || !parsed.success) {
+    response.status(400).json({ error: "Invalid question update." });
+    return;
+  }
+  try {
+    const questionId = String(request.params.questionId);
+    const questionRef = db.collection(collection).doc(questionId);
+    if (!(await questionRef.get()).exists) {
+      response.status(404).json({ error: "Question not found." });
+      return;
+    }
+    await questionRef.set({ ...parsed.data, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    response.json({ id: questionId, ...parsed.data });
+  } catch (error) {
+    console.error("Failed to update question", error);
+    response.status(500).json({ error: "Unable to update question." });
+  }
+});
+
 router.patch("/admin/event", requireAuth, requireRole("admin"), async (request, response) => {
   const parsed = z.object({
     round1Started: z.boolean().optional(), round2Started: z.boolean().optional(),
@@ -247,6 +333,13 @@ router.patch("/admin/event", requireAuth, requireRole("admin"), async (request, 
   }
 
   try {
+    if (parsed.data.round2Started === true) {
+      const qualifiersSnapshot = await db.collection("users").where("round1Qualified", "==", true).limit(1).get();
+      if (qualifiersSnapshot.empty) {
+        response.status(409).json({ error: "Round 2 cannot start until at least one participant passes Round 1." });
+        return;
+      }
+    }
     await settingsRef.set({ ...parsed.data, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
     response.json({ ...parsed.data });
   } catch (error) {
