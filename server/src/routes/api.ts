@@ -147,10 +147,24 @@ router.post("/submissions/round1", requireAuth, async (request: AuthenticatedReq
     // 2. RETURN INSTANTLY to the frontend
     response.status(201).json({ submitted: true });
 
-    // 3. EVALUATE IN BACKGROUND (with infinite retry for rate limits)
+    // 3. EVALUATE IN BACKGROUND — two phases
     (async () => {
-      let success = false;
-      while (!success) {
+      // Phase 1: Save code score INSTANTLY (no API needed)
+      const normalize = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+      const codeScore = normalize(parsed.data.correctedLine) === normalize(String(question.correctedLine)) ? 7 : 0;
+      await answerRef.set({
+        score: codeScore,
+        feedback: codeScore === 7 ? "Code correct! Explanation being evaluated..." : "Code incorrect. Explanation being evaluated...",
+      }, { merge: true });
+      console.log(`[Background Eval] Phase 1 done — code score ${codeScore}/7 saved instantly for question ${parsed.data.questionId}`);
+
+      // Phase 2: Retry explanation scoring until API succeeds (could take minutes if quota is hit)
+      if (!parsed.data.description || parsed.data.description.trim().length < 3) {
+        await answerRef.set({ feedback: codeScore === 7 ? "Code correct! No explanation provided." : "Code incorrect. No explanation provided." }, { merge: true });
+        return;
+      }
+      let explanationDone = false;
+      while (!explanationDone) {
         try {
           const evaluation = await evaluateRound1Answer({
             code: String(question.code),
@@ -159,15 +173,17 @@ router.post("/submissions/round1", requireAuth, async (request: AuthenticatedReq
             participantLine: parsed.data.correctedLine,
             participantDescription: parsed.data.description,
           });
-          
-          await answerRef.set({ 
-            score: evaluation.score,
-            feedback: evaluation.feedback,
-          }, { merge: true });
-          
-          success = true; // Break out of retry loop
+          // Only update if explanation actually got evaluated (not just code fallback)
+          if (evaluation.feedback.includes("Explanation could not be evaluated")) {
+            console.log(`[Background Eval] Explanation still failing for ${parsed.data.questionId}, retrying in 65s...`);
+            await new Promise(resolve => setTimeout(resolve, 65000));
+          } else {
+            await answerRef.set({ score: evaluation.score, feedback: evaluation.feedback }, { merge: true });
+            console.log(`[Background Eval] Phase 2 done — full score ${evaluation.score}/10 saved for question ${parsed.data.questionId}`);
+            explanationDone = true;
+          }
         } catch (e: any) {
-          console.error(`[Background Eval] Failed for ${parsed.data.questionId}, retrying in 65s...`, e.message);
+          console.error(`[Background Eval] Phase 2 error for ${parsed.data.questionId}, retrying in 65s...`, e.message);
           await new Promise(resolve => setTimeout(resolve, 65000));
         }
       }
