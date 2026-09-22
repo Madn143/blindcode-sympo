@@ -46,12 +46,43 @@ function extractJson(text: string) {
   return withoutFence.slice(objectStart, objectEnd + 1);
 }
 
+// Smart key cooldown tracker — marks a key as cooling and picks the best available one
+const keyCooldowns = new Map<string, number>();
+
+function getAvailableKey(keys: string[]): { key: string; waitMs: number } {
+  const now = Date.now();
+  // Find a key that is not cooling down
+  for (const key of keys) {
+    const coolUntil = keyCooldowns.get(key) ?? 0;
+    if (now >= coolUntil) return { key, waitMs: 0 };
+  }
+  // All keys are cooling — pick the one that cools down soonest
+  let soonestKey = keys[0];
+  let soonestTime = keyCooldowns.get(keys[0]) ?? 0;
+  for (const key of keys) {
+    const coolUntil = keyCooldowns.get(key) ?? 0;
+    if (coolUntil < soonestTime) { soonestKey = key; soonestTime = coolUntil; }
+  }
+  return { key: soonestKey, waitMs: Math.max(0, soonestTime - now) };
+}
+
+function parseRetryAfterMs(errorMessage: string): number {
+  const match = errorMessage.match(/Please retry in ([0-9.]+)s/);
+  if (match) return (parseFloat(match[1]) + 2) * 1000; // add 2s buffer
+  return 65000; // default 65 second fallback
+}
+
+
 export async function evaluateRound2Answer(input: EvaluationInput): Promise<Evaluation> {
   const apiKeys = process.env.GEMINI_API_KEY?.split(",").map(k => k.trim()).filter(Boolean);
   if (!apiKeys || apiKeys.length === 0) {
     throw new Error("GEMINI_API_KEY is not configured; round 2 was not evaluated.");
   }
-  const apiKey = apiKeys[Math.floor(Math.random() * apiKeys.length)];
+  const { key: apiKey, waitMs } = getAvailableKey(apiKeys);
+  if (waitMs > 0) {
+    console.log(`[Round2 Eval] All keys cooling, waiting ${Math.ceil(waitMs/1000)}s for soonest key...`);
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+  }
 
   const models = [process.env.GEMINI_MODEL, "gemini-flash-latest", "gemini-3.6-flash"].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
   const prompt = `You are an extremely strict and unforgiving programming competition judge evaluating a student's code submission.
@@ -99,6 +130,10 @@ Return ONLY a JSON object with this exact shape (no markdown):
       const payload = (await response.json()) as { error?: { message?: string }; candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
       if (!response.ok || payload.error) {
         lastError = `Gemini API error (${model}): ${payload.error?.message ?? response.statusText}`;
+        if (response.status === 429) {
+          keyCooldowns.set(apiKey, Date.now() + parseRetryAfterMs(payload.error?.message ?? ""));
+          throw new Error(lastError);
+        }
         if (response.status === 404 || (response.status === 400 && !payload.error?.message?.includes("API key"))) continue;
         throw new Error(lastError);
       }
@@ -115,34 +150,42 @@ Return ONLY a JSON object with this exact shape (no markdown):
 }
 
 export async function evaluateRound1Answer(input: Round1EvaluationInput): Promise<Round1Evaluation> {
+  // --- STEP 1: Instant local code comparison (7 marks, zero API calls) ---
+  const normalize = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+  const codeScore = normalize(input.participantLine) === normalize(input.expectedLine) ? 7 : 0;
+  console.log(`[Round1 Eval] Code score: ${codeScore}/7 (local comparison)`);
+
+  // --- STEP 2: Gemini call ONLY for explanation (3 marks) ---
+  // Skip API call if explanation is empty
+  if (!input.participantDescription || input.participantDescription.trim().length < 3) {
+    const totalScore = codeScore + 0;
+    return { score: totalScore, feedback: codeScore === 7 ? "Correct fix! No explanation provided." : "Incorrect fix and no explanation." };
+  }
+
   const apiKeys = process.env.GEMINI_API_KEY?.split(",").map(k => k.trim()).filter(Boolean);
   if (!apiKeys || apiKeys.length === 0) {
-    throw new Error("GEMINI_API_KEY is not configured; round 1 was not evaluated.");
+    // If no API key, just skip explanation marks
+    return { score: codeScore, feedback: codeScore === 7 ? "Correct fix! (Explanation not evaluated — no API key configured)" : "Incorrect fix." };
   }
-  const apiKey = apiKeys[Math.floor(Math.random() * apiKeys.length)];
+  const { key: apiKey, waitMs } = getAvailableKey(apiKeys);
+  if (waitMs > 0) {
+    console.log(`[Round1 Eval] All keys cooling, waiting ${Math.ceil(waitMs/1000)}s for soonest key...`);
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+  }
 
   const models = [process.env.GEMINI_MODEL, "gemini-flash-latest", "gemini-3.6-flash"].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
-  const prompt = `You are a strict programming competition evaluator grading a code debugging round.
 
-Original Buggy Code:
----
-${input.code}
----
+  // Minimal prompt — just grade the explanation out of 3
+  const explanationPrompt = `You are grading a programming competition answer. Award 0, 1, 2 or 3 marks for the explanation.
 
-Expected Corrected Line: ${input.expectedLine}
-Expected Explanation: ${input.expectedDescription}
+Expected explanation: ${input.expectedDescription}
+Student's explanation: ${input.participantDescription}
 
-Participant's Submitted Line: ${input.participantLine}
-Participant's Submitted Explanation: ${input.participantDescription}
+Award 3 marks if the student correctly identifies the root cause of the bug.
+Award 1-2 marks for a partially correct explanation.
+Award 0 marks if the explanation is irrelevant or wrong.
 
-Evaluate the participant's submission out of 10 total marks.
-- Up to 7 marks for the corrected line. Award 7 marks ONLY if the code completely fixes the bug and is 100% syntactically valid in C.
-  CRITICAL: If the code still contains a syntax error (like a missing semicolon), award 0 marks for this section. Do NOT give partial credit for missing semicolons.
-- Up to 3 marks for the explanation. Award 3 marks ONLY if they correctly identify the root cause of the error. If the explanation is empty or irrelevant, award 0 marks for this section.
-
-Return only JSON with this exact shape:
-{"score": 0, "feedback": "short explanation"}
-Do not use markdown.`;
+Return ONLY JSON: {"explanation_score": 0, "feedback": "one sentence"}`;
 
   let lastError = "Gemini returned no usable evaluation.";
   for (const model of models) {
@@ -153,26 +196,35 @@ Do not use markdown.`;
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
+            contents: [{ parts: [{ text: explanationPrompt }] }],
             generationConfig: { temperature: 0, responseMimeType: "application/json" },
           }),
-          signal: AbortSignal.timeout(60_000),
+          signal: AbortSignal.timeout(30_000),
         }
       );
       const payload = (await response.json()) as { error?: { message?: string }; candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
       if (!response.ok || payload.error) {
         lastError = `Gemini API error (${model}): ${payload.error?.message ?? response.statusText}`;
+        if (response.status === 429) {
+          keyCooldowns.set(apiKey, Date.now() + parseRetryAfterMs(payload.error?.message ?? ""));
+          throw new Error(lastError);
+        }
         if (response.status === 404 || (response.status === 400 && !payload.error?.message?.includes("API key"))) continue;
         throw new Error(lastError);
       }
       const text = payload.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!text) throw new Error("Gemini returned an empty evaluation.");
-      const parsed = round1EvaluationSchema.parse(JSON.parse(extractJson(text)));
-      console.log(`[Round1 Eval] model=${model} score=${parsed.score} feedback="${parsed.feedback}"`);
-      return parsed;
+      const raw = JSON.parse(extractJson(text));
+      const explanationScore = Math.min(3, Math.max(0, Number(raw.explanation_score ?? 0)));
+      const totalScore = codeScore + explanationScore;
+      const feedback = raw.feedback ?? "";
+      console.log(`[Round1 Eval] model=${model} codeScore=${codeScore} explanationScore=${explanationScore} total=${totalScore}`);
+      return { score: totalScore, feedback: `Code (${codeScore}/7): ${codeScore === 7 ? "Correct fix." : "Incorrect fix."} Explanation (${explanationScore}/3): ${feedback}` };
     } catch (error) {
       lastError = error instanceof Error ? error.message : lastError;
     }
   }
-  throw new Error(`${lastError}. Set GEMINI_MODEL to a model enabled for your API key.`);
+  // If Gemini fails for explanation, still return the code score
+  console.warn(`[Round1 Eval] Explanation API failed, returning code score only: ${codeScore}/7`);
+  return { score: codeScore, feedback: codeScore === 7 ? "Correct fix! (Explanation could not be evaluated due to API issues.)" : "Incorrect fix. (Explanation could not be evaluated due to API issues.)" };
 }
