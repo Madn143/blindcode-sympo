@@ -150,7 +150,7 @@ router.post("/submissions/round1", requireAuth, async (request: AuthenticatedReq
     // 3. EVALUATE IN BACKGROUND — two phases
     (async () => {
       // Phase 1: Save code score INSTANTLY (no API needed)
-      const normalize = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+      const normalize = (s: string) => s.replace(/\s/g, "").toLowerCase();
       const codeScore = normalize(parsed.data.correctedLine) === normalize(String(question.correctedLine)) ? 7 : 0;
       await answerRef.set({
         score: codeScore,
