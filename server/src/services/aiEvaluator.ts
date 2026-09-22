@@ -186,19 +186,18 @@ Return ONLY JSON: {"explanation_score": 0, "feedback": "one sentence"}`;
           model: "llama3-8b-8192",
           messages: [{ role: "user", content: explanationPrompt }],
           temperature: 0,
-          response_format: { type: "json_object" },
         }),
         signal: AbortSignal.timeout(15_000),
       });
       const groqPayload = await groqResponse.json() as any;
       if (groqResponse.ok && groqPayload.choices?.[0]?.message?.content) {
-        const raw = JSON.parse(groqPayload.choices[0].message.content);
+        const raw = JSON.parse(extractJson(groqPayload.choices[0].message.content));
         const explanationScore = Math.min(3, Math.max(0, Number(raw.explanation_score ?? 0)));
         const totalScore = codeScore + explanationScore;
         console.log(`[Round1 Eval] Groq: codeScore=${codeScore} explanationScore=${explanationScore} total=${totalScore}`);
         return { score: totalScore, feedback: `Code (${codeScore}/7): ${codeScore === 7 ? "Correct fix." : "Incorrect fix."} Explanation (${explanationScore}/3): ${raw.feedback ?? ""}` };
       }
-      console.warn(`[Round1 Eval] Groq failed (${groqResponse.status}), falling back to Gemini...`);
+      console.warn(`[Round1 Eval] Groq failed (${groqResponse.status}): ${JSON.stringify(groqPayload?.error ?? groqPayload)}, falling back to Gemini...`);
     } catch (groqError) {
       console.warn(`[Round1 Eval] Groq error, falling back to Gemini...`, groqError instanceof Error ? groqError.message : groqError);
     }
