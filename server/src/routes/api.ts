@@ -167,8 +167,8 @@ router.post("/submissions/round1", requireAuth, async (request: AuthenticatedReq
           
           success = true; // Break out of retry loop
         } catch (e: any) {
-          console.error(`[Background Eval] Failed for ${parsed.data.questionId}, retrying in 15s...`, e.message);
-          await new Promise(resolve => setTimeout(resolve, 15000));
+          console.error(`[Background Eval] Failed for ${parsed.data.questionId}, retrying in 65s...`, e.message);
+          await new Promise(resolve => setTimeout(resolve, 65000));
         }
       }
     })();
