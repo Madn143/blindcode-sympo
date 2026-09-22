@@ -163,19 +163,8 @@ export async function evaluateRound1Answer(input: Round1EvaluationInput): Promis
   }
 
   const apiKeys = process.env.GEMINI_API_KEY?.split(",").map(k => k.trim()).filter(Boolean);
-  if (!apiKeys || apiKeys.length === 0) {
-    // If no API key, just skip explanation marks
-    return { score: codeScore, feedback: codeScore === 7 ? "Correct fix! (Explanation not evaluated — no API key configured)" : "Incorrect fix." };
-  }
-  const { key: apiKey, waitMs } = getAvailableKey(apiKeys);
-  if (waitMs > 0) {
-    console.log(`[Round1 Eval] All keys cooling, waiting ${Math.ceil(waitMs/1000)}s for soonest key...`);
-    await new Promise(resolve => setTimeout(resolve, waitMs));
-  }
+  const groqKey = process.env.GROQ_API_KEY?.trim();
 
-  const models = [process.env.GEMINI_MODEL, "gemini-flash-latest", "gemini-3.6-flash"].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
-
-  // Minimal prompt — just grade the explanation out of 3
   const explanationPrompt = `You are grading a programming competition answer. Award 0, 1, 2 or 3 marks for the explanation.
 
 Expected explanation: ${input.expectedDescription}
@@ -186,6 +175,47 @@ Award 1-2 marks for a partially correct explanation.
 Award 0 marks if the explanation is irrelevant or wrong.
 
 Return ONLY JSON: {"explanation_score": 0, "feedback": "one sentence"}`;
+
+  // --- Try Groq FIRST (10x faster, 30 RPM free tier) ---
+  if (groqKey) {
+    try {
+      const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${groqKey}` },
+        body: JSON.stringify({
+          model: "llama-3.1-8b-instant",
+          messages: [{ role: "user", content: explanationPrompt }],
+          temperature: 0,
+          response_format: { type: "json_object" },
+        }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const groqPayload = await groqResponse.json() as any;
+      if (groqResponse.ok && groqPayload.choices?.[0]?.message?.content) {
+        const raw = JSON.parse(groqPayload.choices[0].message.content);
+        const explanationScore = Math.min(3, Math.max(0, Number(raw.explanation_score ?? 0)));
+        const totalScore = codeScore + explanationScore;
+        console.log(`[Round1 Eval] Groq: codeScore=${codeScore} explanationScore=${explanationScore} total=${totalScore}`);
+        return { score: totalScore, feedback: `Code (${codeScore}/7): ${codeScore === 7 ? "Correct fix." : "Incorrect fix."} Explanation (${explanationScore}/3): ${raw.feedback ?? ""}` };
+      }
+      console.warn(`[Round1 Eval] Groq failed (${groqResponse.status}), falling back to Gemini...`);
+    } catch (groqError) {
+      console.warn(`[Round1 Eval] Groq error, falling back to Gemini...`, groqError instanceof Error ? groqError.message : groqError);
+    }
+  }
+
+  // --- Fallback: Gemini ---
+  if (!apiKeys || apiKeys.length === 0) {
+    return { score: codeScore, feedback: codeScore === 7 ? "Correct fix! (Explanation not evaluated — no API key configured)" : "Incorrect fix." };
+  }
+  const { key: apiKey, waitMs } = getAvailableKey(apiKeys);
+  if (waitMs > 0) {
+    console.log(`[Round1 Eval] All Gemini keys cooling, waiting ${Math.ceil(waitMs/1000)}s for soonest key...`);
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+  }
+
+  const models = [process.env.GEMINI_MODEL, "gemini-flash-latest", "gemini-3.6-flash"].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
+
 
   let lastError = "Gemini returned no usable evaluation.";
   // Try each API key independently — stop on 429 and move to next key
