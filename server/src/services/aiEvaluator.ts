@@ -188,43 +188,50 @@ Award 0 marks if the explanation is irrelevant or wrong.
 Return ONLY JSON: {"explanation_score": 0, "feedback": "one sentence"}`;
 
   let lastError = "Gemini returned no usable evaluation.";
-  for (const model of models) {
-    try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: explanationPrompt }] }],
-            generationConfig: { temperature: 0, responseMimeType: "application/json" },
-          }),
-          signal: AbortSignal.timeout(30_000),
+  // Try each API key independently — stop on 429 and move to next key
+  for (const tryKey of apiKeys) {
+    const coolUntil = keyCooldowns.get(tryKey) ?? 0;
+    if (Date.now() < coolUntil) continue; // Skip cooling keys
+
+    for (const model of models) {
+      try {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(tryKey)}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: explanationPrompt }] }],
+              generationConfig: { temperature: 0, responseMimeType: "application/json" },
+            }),
+            signal: AbortSignal.timeout(30_000),
+          }
+        );
+        const payload = (await response.json()) as { error?: { message?: string }; candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+        if (!response.ok || payload.error) {
+          lastError = `Gemini API error (${model}): ${payload.error?.message ?? response.statusText}`;
+          if (response.status === 429) {
+            // Mark this key as cooling and immediately try the next key
+            keyCooldowns.set(tryKey, Date.now() + parseRetryAfterMs(payload.error?.message ?? ""));
+            break; // Break model loop → try next key
+          }
+          if (response.status === 404 || (response.status === 400 && !payload.error?.message?.includes("API key"))) continue;
+          break; // Other errors → try next key
         }
-      );
-      const payload = (await response.json()) as { error?: { message?: string }; candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-      if (!response.ok || payload.error) {
-        lastError = `Gemini API error (${model}): ${payload.error?.message ?? response.statusText}`;
-        if (response.status === 429) {
-          keyCooldowns.set(apiKey, Date.now() + parseRetryAfterMs(payload.error?.message ?? ""));
-          throw new Error(lastError);
-        }
-        if (response.status === 404 || (response.status === 400 && !payload.error?.message?.includes("API key"))) continue;
-        throw new Error(lastError);
+        const text = payload.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!text) throw new Error("Gemini returned an empty evaluation.");
+        const raw = JSON.parse(extractJson(text));
+        const explanationScore = Math.min(3, Math.max(0, Number(raw.explanation_score ?? 0)));
+        const totalScore = codeScore + explanationScore;
+        const feedback = raw.feedback ?? "";
+        console.log(`[Round1 Eval] key=...${tryKey.slice(-6)} model=${model} codeScore=${codeScore} explanationScore=${explanationScore} total=${totalScore}`);
+        return { score: totalScore, feedback: `Code (${codeScore}/7): ${codeScore === 7 ? "Correct fix." : "Incorrect fix."} Explanation (${explanationScore}/3): ${feedback}` };
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : lastError;
       }
-      const text = payload.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!text) throw new Error("Gemini returned an empty evaluation.");
-      const raw = JSON.parse(extractJson(text));
-      const explanationScore = Math.min(3, Math.max(0, Number(raw.explanation_score ?? 0)));
-      const totalScore = codeScore + explanationScore;
-      const feedback = raw.feedback ?? "";
-      console.log(`[Round1 Eval] model=${model} codeScore=${codeScore} explanationScore=${explanationScore} total=${totalScore}`);
-      return { score: totalScore, feedback: `Code (${codeScore}/7): ${codeScore === 7 ? "Correct fix." : "Incorrect fix."} Explanation (${explanationScore}/3): ${feedback}` };
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : lastError;
     }
   }
-  // If Gemini fails for explanation, still return the code score
+  // All keys exhausted — still return code score so student isn't penalised
   console.warn(`[Round1 Eval] Explanation API failed (reason: ${lastError}), returning code score only: ${codeScore}/7`);
   return { score: codeScore, feedback: codeScore === 7 ? "Correct fix! (Explanation could not be evaluated due to API issues.)" : "Incorrect fix. (Explanation could not be evaluated due to API issues.)" };
 }
