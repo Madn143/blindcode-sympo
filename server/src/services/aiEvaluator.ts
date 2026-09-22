@@ -225,6 +225,6 @@ Return ONLY JSON: {"explanation_score": 0, "feedback": "one sentence"}`;
     }
   }
   // If Gemini fails for explanation, still return the code score
-  console.warn(`[Round1 Eval] Explanation API failed, returning code score only: ${codeScore}/7`);
+  console.warn(`[Round1 Eval] Explanation API failed (reason: ${lastError}), returning code score only: ${codeScore}/7`);
   return { score: codeScore, feedback: codeScore === 7 ? "Correct fix! (Explanation could not be evaluated due to API issues.)" : "Incorrect fix. (Explanation could not be evaluated due to API issues.)" };
 }
