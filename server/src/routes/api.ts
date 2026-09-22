@@ -134,23 +134,45 @@ router.post("/submissions/round1", requireAuth, async (request: AuthenticatedReq
     }
 
     const question = questionSnapshot.data()!;
-    const evaluation = await evaluateRound1Answer({
-      code: String(question.code),
-      expectedLine: String(question.correctedLine),
-      expectedDescription: String(question.description),
-      participantLine: parsed.data.correctedLine,
-      participantDescription: parsed.data.description,
-    });
-
+    // 1. SAVE IMMEDIATELY to prevent data loss and give instant feedback
     const answerRef = db.collection("round1_answers").doc(`${request.user.uid}_${parsed.data.questionId}`);
     await answerRef.set({ 
       ...parsed.data, 
       userId: request.user.uid, 
-      score: evaluation.score,
-      feedback: evaluation.feedback,
+      score: -1, // -1 indicates pending evaluation
+      feedback: "Evaluation pending...",
       submittedAt: FieldValue.serverTimestamp() 
     }, { merge: true });
+
+    // 2. RETURN INSTANTLY to the frontend
     response.status(201).json({ submitted: true });
+
+    // 3. EVALUATE IN BACKGROUND (with infinite retry for rate limits)
+    (async () => {
+      let success = false;
+      while (!success) {
+        try {
+          const evaluation = await evaluateRound1Answer({
+            code: String(question.code),
+            expectedLine: String(question.correctedLine),
+            expectedDescription: String(question.description),
+            participantLine: parsed.data.correctedLine,
+            participantDescription: parsed.data.description,
+          });
+          
+          await answerRef.set({ 
+            score: evaluation.score,
+            feedback: evaluation.feedback,
+          }, { merge: true });
+          
+          success = true; // Break out of retry loop
+        } catch (e: any) {
+          console.error(`[Background Eval] Failed for ${parsed.data.questionId}, retrying in 15s...`, e.message);
+          await new Promise(resolve => setTimeout(resolve, 15000));
+        }
+      }
+    })();
+
   } catch (error) {
     console.error("Failed to submit round 1 answer", error);
     response.status(500).json({ error: "Unable to save round 1 submission." });
