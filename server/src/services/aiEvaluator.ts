@@ -75,16 +75,8 @@ function parseRetryAfterMs(errorMessage: string): number {
 
 export async function evaluateRound2Answer(input: EvaluationInput): Promise<Evaluation> {
   const apiKeys = process.env.GEMINI_API_KEY?.split(",").map(k => k.trim()).filter(Boolean);
-  if (!apiKeys || apiKeys.length === 0) {
-    throw new Error("GEMINI_API_KEY is not configured; round 2 was not evaluated.");
-  }
-  const { key: apiKey, waitMs } = getAvailableKey(apiKeys);
-  if (waitMs > 0) {
-    console.log(`[Round2 Eval] All keys cooling, waiting ${Math.ceil(waitMs/1000)}s for soonest key...`);
-    await new Promise(resolve => setTimeout(resolve, waitMs));
-  }
+  const groqKeys = process.env.GROQ_API_KEY?.split(",").map(k => k.trim()).filter(Boolean) ?? [];
 
-  const models = [process.env.GEMINI_MODEL, "gemini-flash-latest", "gemini-3.6-flash"].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
   const prompt = `You are an extremely strict and unforgiving programming competition judge evaluating a student's code submission.
 
 Question / Task: ${input.question}
@@ -112,6 +104,44 @@ CRITICAL RULES:
 
 Return ONLY a JSON object with this exact shape (no markdown):
 {"syntax_errors": 0, "logical_errors": 0, "logic_correct": true, "output_correct": true, "feedback": "Strict feedback on what is broken, especially pointing out syntax errors if any."}`;
+
+  // --- Try Groq FIRST (faster, higher limits) ---
+  if (groqKeys.length > 0) {
+    const groqKey = groqKeys[Math.floor(Math.random() * groqKeys.length)];
+    try {
+      const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${groqKey}` },
+        body: JSON.stringify({
+          model: "qwen/qwen3.8-27b",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0,
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      const groqPayload = await groqResponse.json() as any;
+      if (groqResponse.ok && groqPayload.choices?.[0]?.message?.content) {
+        const r2parsed = evaluationSchema.parse(JSON.parse(extractJson(groqPayload.choices[0].message.content)));
+        console.log(`[Round2 Eval] Groq: syntax_errors=${r2parsed.syntax_errors} logical_errors=${r2parsed.logical_errors}`);
+        return r2parsed;
+      }
+      console.warn(`[Round2 Eval] Groq failed (${groqResponse.status}), falling back to Gemini...`);
+    } catch (groqError) {
+      console.warn(`[Round2 Eval] Groq error, falling back to Gemini...`, groqError instanceof Error ? groqError.message : groqError);
+    }
+  }
+
+  // --- Fallback: Gemini ---
+  if (!apiKeys || apiKeys.length === 0) {
+    throw new Error("No AI API keys configured; round 2 was not evaluated.");
+  }
+  const { key: apiKey, waitMs } = getAvailableKey(apiKeys);
+  if (waitMs > 0) {
+    console.log(`[Round2 Eval] All Gemini keys cooling, waiting ${Math.ceil(waitMs/1000)}s for soonest key...`);
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+  }
+
+  const models = [process.env.GEMINI_MODEL, "gemini-flash-latest", "gemini-3.6-flash"].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
   let lastError = "Gemini returned no usable evaluation.";
   for (const model of models) {
     try {
@@ -151,7 +181,7 @@ Return ONLY a JSON object with this exact shape (no markdown):
 
 export async function evaluateRound1Answer(input: Round1EvaluationInput): Promise<Round1Evaluation> {
   // --- STEP 1: Instant local code comparison (7 marks, zero API calls) ---
-  const normalize = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+  const normalize = (s: string) => s.replace(/\s/g, "").toLowerCase();
   const codeScore = normalize(input.participantLine) === normalize(input.expectedLine) ? 7 : 0;
   console.log(`[Round1 Eval] Code score: ${codeScore}/7 (local comparison)`);
 
