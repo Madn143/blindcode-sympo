@@ -52,7 +52,7 @@ export async function evaluateRound2Answer(input: EvaluationInput): Promise<Eval
     throw new Error("GEMINI_API_KEY is not configured; round 2 was not evaluated.");
   }
 
-  const models = [process.env.GEMINI_MODEL, "gemini-1.5-flash", "gemini-1.5-pro"].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
+  const models = [process.env.GEMINI_MODEL, "gemini-flash-latest", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
   const prompt = `You are an extremely strict and unforgiving programming competition judge evaluating a student's code submission.
 
 Question / Task: ${input.question}
@@ -119,7 +119,7 @@ export async function evaluateRound1Answer(input: Round1EvaluationInput): Promis
     throw new Error("GEMINI_API_KEY is not configured; round 1 was not evaluated.");
   }
 
-  const models = [process.env.GEMINI_MODEL, "gemini-1.5-flash", "gemini-1.5-pro"].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
+  const models = [process.env.GEMINI_MODEL, "gemini-flash-latest", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
   const prompt = `You are a strict programming competition evaluator grading a code debugging round.
 
 Original Buggy Code:
