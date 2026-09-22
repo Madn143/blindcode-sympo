@@ -102,8 +102,8 @@ router.get("/me/event", requireAuth, async (request: AuthenticatedRequest, respo
     const r1Answers = round1Answers.map(a => scrubAnswer(a, settingsData.round1Finished === true));
     const r2Answers = round2Answers.map(a => scrubAnswer(a, settingsData.round2Finished === true));
 
-    const round1Score = settingsData.round1Finished === true ? round1Answers.reduce((total, answer) => total + Number(answer.score ?? 0), 0) : 0;
-    const round2Score = settingsData.round2Finished === true ? round2Answers.reduce((total, answer) => total + Number(answer.score ?? 0), 0) : 0;
+    const round1Score = settingsData.round1Finished === true ? round1Answers.reduce((total, answer) => total + Math.max(0, Number(answer.score ?? 0)), 0) : 0;
+    const round2Score = settingsData.round2Finished === true ? round2Answers.reduce((total, answer) => total + Math.max(0, Number(answer.score ?? 0)), 0) : 0;
 
     response.json({
       settings: settingsData,
@@ -333,13 +333,13 @@ router.get("/admin/leaderboard", requireAuth, requireRole("admin"), async (_requ
     for (const answer of round1Snapshot.docs) {
       const data = answer.data();
       const current = scores.get(String(data.userId)) ?? { round1: 0, round2: 0 };
-      current.round1 += Number(data.score ?? 0);
+      current.round1 += Math.max(0, Number(data.score ?? 0));
       scores.set(String(data.userId), current);
     }
     for (const answer of round2Snapshot.docs) {
       const data = answer.data();
       const current = scores.get(String(data.userId)) ?? { round1: 0, round2: 0 };
-      current.round2 += Number(data.score ?? 0);
+      current.round2 += Math.max(0, Number(data.score ?? 0));
       scores.set(String(data.userId), current);
     }
     const participants = usersSnapshot.docs.map((document) => {
