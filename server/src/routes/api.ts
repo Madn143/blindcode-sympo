@@ -3,7 +3,7 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { z } from "zod";
 import { db } from "../config/firebaseAdmin.js";
 import { requireAuth, requireRole, type AuthenticatedRequest } from "../middleware/auth.js";
-import { evaluateRound2Answer } from "../services/aiEvaluator.js";
+import { evaluateRound1Answer, evaluateRound2Answer } from "../services/aiEvaluator.js";
 
 const router = Router();
 const submissionSchema = z.object({
@@ -15,7 +15,7 @@ const round2Schema = z.object({ questionId: z.string().min(1), answer: z.string(
 const settingsRef = db.collection("event_settings").doc("current");
 
 function normalizeCode(value: string) {
-  return value.trim().replace(/\s+/g, " ").toLowerCase();
+  return value.replace(/\s+/g, "").toLowerCase();
 }
 
 router.get("/event", async (_request, response) => {
@@ -89,13 +89,27 @@ router.get("/me/event", requireAuth, async (request: AuthenticatedRequest, respo
     ]);
     const round1Answers: Array<{ id: string; score?: number; [key: string]: unknown }> = round1Snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
     const round2Answers: Array<{ id: string; score?: number; [key: string]: unknown }> = round2Snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
-    const round1Score = round1Answers.reduce((total, answer) => total + Number(answer.score ?? 0), 0);
-    const round2Score = round2Answers.reduce((total, answer) => total + Number(answer.score ?? 0), 0);
+    
+    const settingsData = settingsSnapshot.data() ?? { round1Started: true, round2Started: false, round1Finished: false, round2Finished: false };
+    
+    // Scrub scores if rounds are not finished
+    const scrubAnswer = (answer: any, isFinished: boolean) => {
+      if (isFinished) return answer;
+      const { score, feedback, aiFeedback, syntaxErrors, logicalErrors, logicCorrect, outputCorrect, syntaxPenalty, logicalPenalty, ...rest } = answer;
+      return rest;
+    };
+
+    const r1Answers = round1Answers.map(a => scrubAnswer(a, settingsData.round1Finished === true));
+    const r2Answers = round2Answers.map(a => scrubAnswer(a, settingsData.round2Finished === true));
+
+    const round1Score = settingsData.round1Finished === true ? round1Answers.reduce((total, answer) => total + Number(answer.score ?? 0), 0) : 0;
+    const round2Score = settingsData.round2Finished === true ? round2Answers.reduce((total, answer) => total + Number(answer.score ?? 0), 0) : 0;
+
     response.json({
-      settings: settingsSnapshot.data() ?? { round1Started: true, round2Started: false, round1Finished: false, round2Finished: false },
+      settings: settingsData,
       profile: profileSnapshot.data() ?? { name: request.user.email ?? "Participant", collegeName: "" },
-      round1Answers,
-      round2Answers,
+      round1Answers: r1Answers,
+      round2Answers: r2Answers,
       scores: { round1: round1Score, round2: round2Score, total: round1Score + round2Score },
     });
   } catch (error) {
@@ -112,6 +126,7 @@ router.post("/submissions/round1", requireAuth, async (request: AuthenticatedReq
   }
 
   try {
+    console.log(`[Round1 Submit] questionId=${parsed.data.questionId} correctedLine="${parsed.data.correctedLine}"`);
     const questionSnapshot = await db.collection("round1_questions").doc(parsed.data.questionId).get();
     if (!questionSnapshot.exists) {
       response.status(404).json({ error: "Round 1 question not found." });
@@ -119,10 +134,23 @@ router.post("/submissions/round1", requireAuth, async (request: AuthenticatedReq
     }
 
     const question = questionSnapshot.data()!;
-    const score = normalizeCode(parsed.data.correctedLine) === normalizeCode(String(question.correctedLine)) ? 10 : 0;
+    const evaluation = await evaluateRound1Answer({
+      code: String(question.code),
+      expectedLine: String(question.correctedLine),
+      expectedDescription: String(question.description),
+      participantLine: parsed.data.correctedLine,
+      participantDescription: parsed.data.description,
+    });
+
     const answerRef = db.collection("round1_answers").doc(`${request.user.uid}_${parsed.data.questionId}`);
-    await answerRef.set({ ...parsed.data, correctedLine: "", userId: request.user.uid, score, submittedAt: FieldValue.serverTimestamp() }, { merge: true });
-    response.status(201).json({ score });
+    await answerRef.set({ 
+      ...parsed.data, 
+      userId: request.user.uid, 
+      score: evaluation.score,
+      feedback: evaluation.feedback,
+      submittedAt: FieldValue.serverTimestamp() 
+    }, { merge: true });
+    response.status(201).json({ submitted: true });
   } catch (error) {
     console.error("Failed to submit round 1 answer", error);
     response.status(500).json({ error: "Unable to save round 1 submission." });
@@ -136,16 +164,28 @@ router.post("/submissions/round2", requireAuth, async (request: AuthenticatedReq
     return;
   }
 
+  const MAX_ATTEMPTS = 2;
+
   try {
     const settingsSnapshot = await settingsRef.get();
     const profileSnapshot = await db.collection("users").doc(request.user.uid).get();
-    if (settingsSnapshot.data()?.round2Started !== true) {
+    const settings = settingsSnapshot.data();
+    if (settings?.round2Started !== true) {
       response.status(409).json({ error: "Round 2 has not been started by the administrator." });
       return;
     }
     if (profileSnapshot.data()?.round1Qualified !== true) {
       response.status(403).json({ error: "You must pass Round 1 before entering Round 2." });
       return;
+    }
+
+    // Check timer has not expired
+    if (settings?.round2StartedAt && settings?.round2DurationMinutes) {
+      const elapsed = (Date.now() - settings.round2StartedAt) / 60000;
+      if (elapsed > settings.round2DurationMinutes) {
+        response.status(409).json({ error: "Round 2 time has expired. No more submissions are allowed." });
+        return;
+      }
     }
 
     const questionSnapshot = await db.collection("round2_questions").doc(parsed.data.questionId).get();
@@ -155,14 +195,13 @@ router.post("/submissions/round2", requireAuth, async (request: AuthenticatedReq
     }
 
     const answerRef = db.collection("round2_answers").doc(`${request.user.uid}_${parsed.data.questionId}`);
-    await answerRef.set({
-      userId: request.user.uid,
-      questionId: parsed.data.questionId,
-      answer: parsed.data.answer,
-      evaluated: false,
-      aiFeedback: null,
-      submittedAt: FieldValue.serverTimestamp(),
-    }, { merge: true });
+    const existingAnswer = await answerRef.get();
+    const currentCount = Number(existingAnswer.data()?.submissionCount ?? 0);
+
+    if (currentCount >= MAX_ATTEMPTS) {
+      response.status(409).json({ error: `Maximum ${MAX_ATTEMPTS} submissions per question reached.` });
+      return;
+    }
 
     const question = questionSnapshot.data()!;
     let evaluation;
@@ -170,6 +209,7 @@ router.post("/submissions/round2", requireAuth, async (request: AuthenticatedReq
       evaluation = await evaluateRound2Answer({
         question: String(question.question),
         language: String(question.language),
+        starterCode: question.starterCode ? String(question.starterCode) : undefined,
         expectedAnswer: String(question.expectedAnswer),
         testCases: question.testCases ? String(question.testCases) : null,
         answer: parsed.data.answer,
@@ -182,12 +222,15 @@ router.post("/submissions/round2", requireAuth, async (request: AuthenticatedReq
 
     const syntaxPenalty = evaluation.syntax_errors * 2;
     const logicalPenalty = evaluation.logical_errors * 10;
-    const score = !evaluation.logic_correct || !evaluation.output_correct
-      ? 0
-      : evaluation.syntax_errors > 0
-        ? 18
-        : 25;
-    await answerRef.update({
+    const score = Math.max(0, 25 - syntaxPenalty - logicalPenalty);
+    
+    // Save the submission only AFTER a successful evaluation
+    await answerRef.set({
+      userId: request.user.uid,
+      questionId: parsed.data.questionId,
+      answer: parsed.data.answer,
+      submissionCount: currentCount + 1,
+      submittedAt: FieldValue.serverTimestamp(),
       syntaxErrors: evaluation.syntax_errors,
       logicalErrors: evaluation.logical_errors,
       syntaxPenalty,
@@ -198,13 +241,21 @@ router.post("/submissions/round2", requireAuth, async (request: AuthenticatedReq
       outputCorrect: evaluation.output_correct,
       evaluated: true,
       evaluatedAt: Timestamp.now(),
+    }, { merge: true });
+    // Hide score details until round is finished — only reveal attempt count
+    const round2Finished = settings?.round2Finished === true;
+    response.status(201).json({
+      submitted: true,
+      submissionCount: currentCount + 1,
+      maxAttempts: MAX_ATTEMPTS,
+      ...(round2Finished ? { score, ...evaluation, syntaxPenalty, logicalPenalty, evaluated: true } : {}),
     });
-    response.status(201).json({ score, ...evaluation, syntaxPenalty, logicalPenalty, evaluated: true });
   } catch (error) {
     console.error("Failed to submit round 2 answer", error);
     response.status(500).json({ error: "Unable to save round 2 submission." });
   }
 });
+
 
 router.post("/submissions/round1/complete", requireAuth, async (request: AuthenticatedRequest, response) => {
   if (!request.user) {
@@ -293,11 +344,11 @@ router.get("/admin/qualifiers", requireAuth, requireRole("admin"), async (_reque
 
 const round1QuestionUpdate = z.object({
   questionNo: z.number().int().positive().optional(), language: z.string().trim().min(1).optional(),
-  code: z.string().optional(), correctLine: z.string().optional(), description: z.string().optional(),
+  code: z.string().optional(), correctedLine: z.string().optional(), description: z.string().optional(),
 });
 const round2QuestionUpdate = z.object({
   questionNo: z.number().int().positive().optional(), language: z.string().trim().min(1).optional(),
-  question: z.string().optional(), starterCode: z.string().optional(), expectedAnswer: z.string().optional(), testCases: z.string().nullable().optional(),
+  question: z.string().optional(), starterCode: z.string().optional(), expectedAnswer: z.string().optional(),
 });
 
 router.patch("/admin/questions/:round/:questionId", requireAuth, requireRole("admin"), async (request, response) => {
@@ -327,6 +378,7 @@ router.patch("/admin/event", requireAuth, requireRole("admin"), async (request, 
   const parsed = z.object({
     round1Started: z.boolean().optional(), round2Started: z.boolean().optional(),
     round1Finished: z.boolean().optional(), round2Finished: z.boolean().optional(),
+    round2DurationMinutes: z.number().int().positive().optional(),
   }).safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ error: "Invalid event settings." });
@@ -341,8 +393,13 @@ router.patch("/admin/event", requireAuth, requireRole("admin"), async (request, 
         return;
       }
     }
-    await settingsRef.set({ ...parsed.data, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
-    response.json({ ...parsed.data });
+    const extra: Record<string, unknown> = {};
+    if (parsed.data.round2Started === true) {
+      // Record exact timestamp in ms so client can compute countdown
+      extra.round2StartedAt = Date.now();
+    }
+    await settingsRef.set({ ...parsed.data, ...extra, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    response.json({ ...parsed.data, ...extra });
   } catch (error) {
     console.error("Failed to update event settings", error);
     response.status(500).json({ error: "Unable to update event settings." });
