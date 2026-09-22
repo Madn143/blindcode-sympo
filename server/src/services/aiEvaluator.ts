@@ -163,7 +163,7 @@ export async function evaluateRound1Answer(input: Round1EvaluationInput): Promis
   }
 
   const apiKeys = process.env.GEMINI_API_KEY?.split(",").map(k => k.trim()).filter(Boolean);
-  const groqKey = process.env.GROQ_API_KEY?.trim();
+  const groqKeys = process.env.GROQ_API_KEY?.split(",").map(k => k.trim()).filter(Boolean) ?? [];
 
   const explanationPrompt = `You are grading a programming competition answer. Award 0, 1, 2 or 3 marks for the explanation.
 
@@ -176,8 +176,9 @@ Award 0 marks if the explanation is irrelevant or wrong.
 
 Return ONLY JSON: {"explanation_score": 0, "feedback": "one sentence"}`;
 
-  // --- Try Groq FIRST (10x faster, 30 RPM free tier) ---
-  if (groqKey) {
+  // --- Try Groq FIRST (10x faster, 30 RPM per key) ---
+  if (groqKeys.length > 0) {
+    const groqKey = groqKeys[Math.floor(Math.random() * groqKeys.length)];
     try {
       const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
