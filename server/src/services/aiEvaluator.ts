@@ -47,10 +47,11 @@ function extractJson(text: string) {
 }
 
 export async function evaluateRound2Answer(input: EvaluationInput): Promise<Evaluation> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
+  const apiKeys = process.env.GEMINI_API_KEY?.split(",").map(k => k.trim()).filter(Boolean);
+  if (!apiKeys || apiKeys.length === 0) {
     throw new Error("GEMINI_API_KEY is not configured; round 2 was not evaluated.");
   }
+  const apiKey = apiKeys[Math.floor(Math.random() * apiKeys.length)];
 
   const models = [process.env.GEMINI_MODEL, "gemini-flash-latest", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
   const prompt = `You are an extremely strict and unforgiving programming competition judge evaluating a student's code submission.
@@ -114,10 +115,11 @@ Return ONLY a JSON object with this exact shape (no markdown):
 }
 
 export async function evaluateRound1Answer(input: Round1EvaluationInput): Promise<Round1Evaluation> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
+  const apiKeys = process.env.GEMINI_API_KEY?.split(",").map(k => k.trim()).filter(Boolean);
+  if (!apiKeys || apiKeys.length === 0) {
     throw new Error("GEMINI_API_KEY is not configured; round 1 was not evaluated.");
   }
+  const apiKey = apiKeys[Math.floor(Math.random() * apiKeys.length)];
 
   const models = [process.env.GEMINI_MODEL, "gemini-flash-latest", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
   const prompt = `You are a strict programming competition evaluator grading a code debugging round.
