@@ -53,7 +53,7 @@ export async function evaluateRound2Answer(input: EvaluationInput): Promise<Eval
   }
   const apiKey = apiKeys[Math.floor(Math.random() * apiKeys.length)];
 
-  const models = [process.env.GEMINI_MODEL, "gemini-flash-latest", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
+  const models = [process.env.GEMINI_MODEL, "gemini-flash-latest", "gemini-3.6-flash"].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
   const prompt = `You are an extremely strict and unforgiving programming competition judge evaluating a student's code submission.
 
 Question / Task: ${input.question}
@@ -121,7 +121,7 @@ export async function evaluateRound1Answer(input: Round1EvaluationInput): Promis
   }
   const apiKey = apiKeys[Math.floor(Math.random() * apiKeys.length)];
 
-  const models = [process.env.GEMINI_MODEL, "gemini-flash-latest", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
+  const models = [process.env.GEMINI_MODEL, "gemini-flash-latest", "gemini-3.6-flash"].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
   const prompt = `You are a strict programming competition evaluator grading a code debugging round.
 
 Original Buggy Code:
