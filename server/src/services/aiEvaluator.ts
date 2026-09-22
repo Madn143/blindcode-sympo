@@ -183,7 +183,7 @@ Return ONLY JSON: {"explanation_score": 0, "feedback": "one sentence"}`;
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${groqKey}` },
         body: JSON.stringify({
-          model: "llama-3.1-8b-instant",
+          model: "llama3-8b-8192",
           messages: [{ role: "user", content: explanationPrompt }],
           temperature: 0,
           response_format: { type: "json_object" },
