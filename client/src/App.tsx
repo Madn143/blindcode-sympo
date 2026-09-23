@@ -329,27 +329,19 @@ function Dashboard({
 function ScoreCards({ data }: { data: ParticipantEvent }) {
   const r1Completed = data.profile.round1Completed;
   const r2Completed = data.settings.round2Finished && r1Completed;
-
   if (!r1Completed && !r2Completed) return null;
-
   return (
     <div className="score-grid">
       {r1Completed && (
         <div>
           <h3>Round 1</h3>
-          <strong>{data.scores.round1} / 100</strong>
+          <strong>✓ Submitted</strong>
         </div>
       )}
       {r2Completed && (
         <div>
           <h3>Round 2</h3>
-          <strong>{data.scores.round2} / 100</strong>
-        </div>
-      )}
-      {(r1Completed && r2Completed) && (
-        <div>
-          <h3>Total</h3>
-          <strong>{data.scores.total} / 200</strong>
+          <strong>✓ Submitted</strong>
         </div>
       )}
     </div>
@@ -714,60 +706,19 @@ function Locked({ title, text }: { title: string; text: string }) {
 }
 function Round1Result({ data, setPage }: { data: ParticipantEvent; setPage: (page: Page) => void }) {
   const qualified = data.profile.round1Qualified === true;
-  const [questions, setQuestions] = useState<Question[]>([]);
-
-  useEffect(() => {
-    api<Question[]>("/questions/round1")
-      .then(setQuestions)
-      .catch(console.error);
-  }, []);
-
-  // Sort answers to match the user's specific question order
-  const sortedAnswers = [...data.round1Answers].sort((a, b) => {
-    const idxA = questions.findIndex(q => q.id === a.questionId);
-    const idxB = questions.findIndex(q => q.id === b.questionId);
-    return (idxA >= 0 ? idxA : 999) - (idxB >= 0 ? idxB : 999);
-  });
-
   return (
     <>
       <Header profile={data.profile} onHome={() => setPage("dashboard")} onSignOut={() => signOut(clientAuth)} />
       <main className="dashboard-main">
-        <div className="dashboard-card" style={{ maxWidth: 760, textAlign: "left" }}>
-          <div className="badge" style={{ display: "block", textAlign: "center", marginBottom: 8 }}>Round 1 Evaluation</div>
-          <h1 style={{ textAlign: "center" }}>{qualified ? "You qualified!" : "Round 1 complete"}</h1>
-          <p style={{ textAlign: "center" }}>Your Round 1 score is <strong>{data.scores.round1} / 100</strong>. The qualifying threshold is above 40%.</p>
-          <div className={qualified ? "alert-success" : "alert-error"} style={{ textAlign: "center" }}>
+        <div className="dashboard-card" style={{ maxWidth: 560, textAlign: "center" }}>
+          <div className="badge" style={{ display: "block", marginBottom: 8 }}>Round 1 Complete</div>
+          <h1>{qualified ? "You Qualified! 🎉" : "Round 1 Complete"}</h1>
+          <p>All your answers have been submitted. Scores are managed by the administrator.</p>
+          <div className={qualified ? "alert-success" : "alert-error"}>
             {qualified ? "PASS — you can continue to Round 2 when the administrator starts it." : "FAIL — you did not qualify for Round 2."}
           </div>
-          {sortedAnswers.length > 0 && questions.length > 0 && (
-            <div className="r1-breakdown">
-              <h3>Score Breakdown</h3>
-              <table className="r1-table">
-                <thead>
-                  <tr><th>Question</th><th>Your Answer</th><th>Score</th><th>Feedback</th></tr>
-                </thead>
-                <tbody>
-                  {sortedAnswers.map((a, i) => {
-                    const qIndex = questions.findIndex(q => q.id === a.questionId);
-                    const qLabel = qIndex >= 0 ? `Q${qIndex + 1}` : `Q?`;
-                    return (
-                      <tr key={a.questionId ?? i}>
-                        <td>{qLabel}</td>
-                        <td><code>{a.correctedLine ?? "—"}</code></td>
-                        <td className={Number(a.score) >= 7 ? "score-good" : Number(a.score) >= 4 ? "score-mid" : "score-bad"}>
-                          {a.score ?? 0} / 10
-                        </td>
-                        <td>{(a as Record<string, unknown>).feedback as string ?? "—"}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
           {qualified && (
-            <div style={{ textAlign: "center", marginTop: 24 }}>
+            <div style={{ marginTop: 24 }}>
               <button className="gradient-button" disabled={!data.settings.round2Started} onClick={() => setPage("round2")}>
                 {data.settings.round2Started ? "NEXT: ROUND 2" : "WAIT FOR ROUND 2"}
               </button>
@@ -784,6 +735,10 @@ function QuestionEditor({ round, question, onChange, onSave }: { round: "round1"
     : <label>{label}<input className="legacy-input" value={String(question[key] ?? "")} onChange={(event) => onChange({ ...question, [key]: event.target.value })} /></label>;
   return <article className="question-editor"><b>Question {question.questionNo}</b>{round === "round1" ? <>{field("code", "Code", true)}{field("correctedLine", "Corrected code")}{field("description", "Description", true)}</> : <>{field("question", "Prompt", true)}{field("starterCode", "Starter code (optional)", true)}{field("expectedAnswer", "Expected Answer / Behavior", true)}</>}<button className="gradient-button small" onClick={onSave}>Save Question</button></article>;
 }
+type ParticipantDetail = {
+  round1: { questionNo: number; questionId: string; correctedLine: string | null; score: number | null; feedback: string | null; status: string }[];
+  round2: { questionNo: number; questionId: string; answer: string | null; score: number | null; aiFeedback: string | null; status: string }[];
+};
 function AdminPage({
   setPage,
   onSignOut,
@@ -803,6 +758,9 @@ function AdminPage({
   const [questions2, setQuestions2] = useState<Question[]>([]);
   const [message, setMessage] = useState("");
   const [round2Duration, setRound2Duration] = useState(60);
+  const [detailParticipant, setDetailParticipant] = useState<Participant | null>(null);
+  const [detail, setDetail] = useState<ParticipantDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   async function refresh() {
     try {
       const [event, leaderboard, passed, one, two] = await Promise.all([
@@ -826,6 +784,19 @@ function AdminPage({
   useEffect(() => {
     refresh();
   }, []);
+  async function openDetail(participant: Participant) {
+    setDetailParticipant(participant);
+    setDetail(null);
+    setDetailLoading(true);
+    try {
+      const data = await api<ParticipantDetail>(`/admin/participants/${participant.id}/answers`);
+      setDetail(data);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Failed to load participant detail.");
+    } finally {
+      setDetailLoading(false);
+    }
+  }
   async function update(patch: Partial<EventSettings>, success: string) {
     try {
       await api("/admin/event", {
@@ -844,6 +815,7 @@ function AdminPage({
       : { questionNo: question.questionNo, language: question.language, question: question.question ?? "", starterCode: question.starterCode ?? "", expectedAnswer: question.expectedAnswer ?? "" };
     try { await api(`/admin/questions/${round}/${question.id}`, { method: "PATCH", body: JSON.stringify(body) }); setMessage(`Question ${question.questionNo} updated.`); } catch (err) { setMessage(err instanceof Error ? err.message : "Question update failed."); }
   }
+  const statusIcon = (s: string) => s === "evaluated" ? "✅" : s === "pending" ? "⏳" : "—";
   return (
     <>
       <header className="legacy-header">
@@ -859,108 +831,45 @@ function AdminPage({
         <h1>Blind Coding — Admin Control</h1>
         {message && <div className="alert-success">✓ {message}</div>}
         <div className="admin-grid">
-          <AdminStat
-            title="Round 1"
-            value={settings.round1Started ? "LIVE" : "STOPPED"}
-            live={settings.round1Started}
-          />
-          <AdminStat
-            title="Round 2"
-            value={settings.round2Started ? "LIVE" : "LOCKED"}
-            live={settings.round2Started}
-          />
+          <AdminStat title="Round 1" value={settings.round1Started ? "LIVE" : "STOPPED"} live={settings.round1Started} />
+          <AdminStat title="Round 2" value={settings.round2Started ? "LIVE" : "LOCKED"} live={settings.round2Started} />
           <AdminStat title="Participants" value={String(participants.length)} />
           <AdminStat title="Maximum Score" value="200" />
         </div>
         <div className="admin-controls">
           <h2>Event Controls</h2>
           {!settings.round1Started ? (
-            <button
-              className="control-start"
-              onClick={() =>
-                update({ round1Started: true }, "Round 1 has been started.")
-              }
-            >
-              ▶ START ROUND 1
-            </button>
+            <button className="control-start" onClick={() => update({ round1Started: true }, "Round 1 has been started.")}>▶ START ROUND 1</button>
           ) : (
-            <button
-              className="control-stop"
-              onClick={() =>
-                update({ round1Started: false }, "Round 1 has been locked.")
-              }
-            >
-              ■ LOCK ROUND 1
-            </button>
+            <button className="control-stop" onClick={() => update({ round1Started: false }, "Round 1 has been locked.")}>■ LOCK ROUND 1</button>
           )}
           {!settings.round2Started ? (
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <label style={{ color: "#d4c9a0", fontSize: "0.85rem", whiteSpace: "nowrap" }}>
                 Duration (min):
-                <input
-                  type="number"
-                  min={5}
-                  max={180}
-                  value={round2Duration}
-                  onChange={(e) => setRound2Duration(Math.max(1, Number(e.target.value)))}
-                  className="legacy-input"
-                  style={{ width: 70, marginLeft: 8 }}
-                />
+                <input type="number" min={5} max={180} value={round2Duration} onChange={(e) => setRound2Duration(Math.max(1, Number(e.target.value)))} className="legacy-input" style={{ width: 70, marginLeft: 8 }} />
               </label>
-              <button
-                className="control-start"
-                onClick={() =>
-                  update({ round2Started: true, round2DurationMinutes: round2Duration }, `Round 2 has been started (${round2Duration} min).`)
-                }
-              >
-                ▶ START ROUND 2
-              </button>
+              <button className="control-start" onClick={() => update({ round2Started: true, round2DurationMinutes: round2Duration }, `Round 2 has been started (${round2Duration} min).`)}>▶ START ROUND 2</button>
             </div>
           ) : (
-            <button
-              className="control-stop"
-              onClick={() =>
-                update({ round2Started: false }, "Round 2 has been locked.")
-              }
-            >
-              ■ LOCK ROUND 2
-            </button>
+            <button className="control-stop" onClick={() => update({ round2Started: false }, "Round 2 has been locked.")}>■ LOCK ROUND 2</button>
           )}
-          <button
-            className="control-finish"
-            onClick={() =>
-              update({ round1Finished: true }, "Round 1 marked as finished.")
-            }
-          >
-            Finish Round 1
-          </button>
-          <button
-            className="control-finish"
-            onClick={() =>
-              update({ round2Finished: true }, "Round 2 marked as finished.")
-            }
-          >
-            Finish Round 2
-          </button>
+          <button className="control-finish" onClick={() => update({ round1Finished: true }, "Round 1 marked as finished.")}>Finish Round 1</button>
+          <button className="control-finish" onClick={() => update({ round2Finished: true }, "Round 2 marked as finished.")}>Finish Round 2</button>
         </div>
         <div className="leaderboard">
-          <h2>Live Leaderboard</h2>
+          <h2>Live Leaderboard <span style={{ fontSize: "0.8rem", fontWeight: 400, color: "#a09070" }}>(click a row to view per-question status)</span></h2>
           <table>
             <thead>
               <tr>
-                <th>Rank</th>
-                <th>Participant</th>
-                <th>College</th>
-                <th>Round 1</th>
-                <th>Round 2</th>
-                <th>Total</th>
+                <th>Rank</th><th>Participant</th><th>College</th><th>Round 1</th><th>Round 2</th><th>Total</th>
               </tr>
             </thead>
             <tbody>
               {participants.map((participant, index) => (
-                <tr key={participant.id}>
+                <tr key={participant.id} onClick={() => openDetail(participant)} style={{ cursor: "pointer" }} title="Click to view evaluation details">
                   <td>#{index + 1}</td>
-                  <td>{participant.name}</td>
+                  <td><strong>{participant.name}</strong></td>
                   <td>{participant.collegeName}</td>
                   <td>{participant.round1} / 100</td>
                   <td>{participant.round2} / 100</td>
@@ -979,6 +888,57 @@ function AdminPage({
           {questions2.map((question) => <QuestionEditor key={question.id} round="round2" question={question} onChange={(next) => setQuestions2((items) => items.map((item) => item.id === question.id ? next : item))} onSave={() => saveQuestion("round2", question)} />)}
         </section>
       </div>
+
+      {/* Participant Detail Modal */}
+      {detailParticipant && (
+        <div className="modal" onClick={() => setDetailParticipant(null)}>
+          <div className="rules-box" style={{ maxWidth: 700, maxHeight: "80vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+            <div className="rules-head">
+              <h2>📋 {detailParticipant.name} <span style={{ fontSize: "0.85rem", fontWeight: 400 }}>— {detailParticipant.collegeName}</span></h2>
+              <button onClick={() => setDetailParticipant(null)}>×</button>
+            </div>
+            <p style={{ marginBottom: 8, color: "#a09070" }}>R1: {detailParticipant.round1}/100 &nbsp;|&nbsp; R2: {detailParticipant.round2}/100 &nbsp;|&nbsp; Total: {detailParticipant.total}/200</p>
+            {detailLoading && <p>⏳ Loading evaluation status...</p>}
+            {detail && (
+              <>
+                <h3 style={{ marginTop: 16 }}>Round 1 — Debugging</h3>
+                <table className="r1-table">
+                  <thead><tr><th>Q</th><th>Answer</th><th>Score</th><th>Status</th><th>Feedback</th></tr></thead>
+                  <tbody>
+                    {detail.round1.map((row) => (
+                      <tr key={row.questionId}>
+                        <td>Q{row.questionNo}</td>
+                        <td><code style={{ fontSize: "0.75rem" }}>{row.correctedLine ?? "—"}</code></td>
+                        <td className={row.score !== null && row.score >= 7 ? "score-good" : row.score !== null && row.score >= 4 ? "score-mid" : "score-bad"}>
+                          {row.score !== null && row.score >= 0 ? `${row.score}/10` : "—"}
+                        </td>
+                        <td>{statusIcon(row.status)}</td>
+                        <td style={{ fontSize: "0.8rem", color: "#c0b090" }}>{row.feedback ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <h3 style={{ marginTop: 20 }}>Round 2 — Write Code</h3>
+                <table className="r1-table">
+                  <thead><tr><th>Q</th><th>Score</th><th>Status</th><th>Feedback</th></tr></thead>
+                  <tbody>
+                    {detail.round2.map((row) => (
+                      <tr key={row.questionId}>
+                        <td>Q{row.questionNo}</td>
+                        <td className={row.score !== null && row.score >= 20 ? "score-good" : row.score !== null && row.score >= 10 ? "score-mid" : "score-bad"}>
+                          {row.score !== null && row.score >= 0 ? `${row.score}/25` : "—"}
+                        </td>
+                        <td>{statusIcon(row.status)}</td>
+                        <td style={{ fontSize: "0.8rem", color: "#c0b090" }}>{row.aiFeedback ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </>
   );
 }
