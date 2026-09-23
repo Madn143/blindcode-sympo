@@ -105,9 +105,11 @@ router.get("/me/event", requireAuth, async (request: AuthenticatedRequest, respo
     const round1Score = settingsData.round1Finished === true ? round1Answers.reduce((total, answer) => total + Math.max(0, Number(answer.score ?? 0)), 0) : 0;
     const round2Score = settingsData.round2Finished === true ? round2Answers.reduce((total, answer) => total + Math.max(0, Number(answer.score ?? 0)), 0) : 0;
 
+    const profileData = profileSnapshot.data() ?? { name: request.user.email ?? "Participant", collegeName: "" };
+
     response.json({
       settings: settingsData,
-      profile: profileSnapshot.data() ?? { name: request.user.email ?? "Participant", collegeName: "" },
+      profile: profileData,
       round1Answers: r1Answers,
       round2Answers: r2Answers,
       scores: { round1: round1Score, round2: round2Score, total: round1Score + round2Score },
@@ -115,6 +117,26 @@ router.get("/me/event", requireAuth, async (request: AuthenticatedRequest, respo
   } catch (error) {
     console.error("Failed to load participant event", error);
     response.status(500).json({ error: "Unable to load participant event." });
+  }
+});
+
+router.post("/submissions/disqualify", requireAuth, async (request: AuthenticatedRequest, response) => {
+  if (!request.user) {
+    response.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  try {
+    const { reason } = request.body ?? {};
+    const userRef = db.collection("users").doc(request.user.uid);
+    await userRef.set({
+      disqualified: true,
+      disqualifiedReason: reason || "Multiple tab/window switches detected",
+      disqualifiedAt: Date.now(),
+    }, { merge: true });
+    response.json({ success: true });
+  } catch (err) {
+    console.error("Failed to disqualify user", err);
+    response.status(500).json({ error: "Failed to disqualify." });
   }
 });
 
@@ -361,7 +383,15 @@ router.get("/admin/leaderboard", requireAuth, requireRole("admin"), async (_requ
     const participants = usersSnapshot.docs.map((document) => {
       const data = document.data();
       const score = scores.get(document.id) ?? { round1: 0, round2: 0 };
-      return { id: document.id, name: data.name ?? data.email ?? "Participant", collegeName: data.collegeName ?? "", ...score, total: score.round1 + score.round2 };
+      return {
+        id: document.id,
+        name: data.name ?? data.email ?? "Participant",
+        collegeName: data.collegeName ?? "",
+        disqualified: data.disqualified === true,
+        disqualifiedReason: data.disqualifiedReason ?? "",
+        ...score,
+        total: score.round1 + score.round2,
+      };
     }).sort((left, right) => right.total - left.total || left.name.localeCompare(right.name));
     response.json(participants);
   } catch (error) {
