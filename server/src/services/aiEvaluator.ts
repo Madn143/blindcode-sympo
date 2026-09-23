@@ -48,15 +48,14 @@ function extractJson(text: string) {
 
 // Smart key cooldown tracker — marks a key as cooling and picks the best available one
 const keyCooldowns = new Map<string, number>();
+const groqCooldowns = new Map<string, number>();
 
 function getAvailableKey(keys: string[]): { key: string; waitMs: number } {
   const now = Date.now();
-  // Find a key that is not cooling down
   for (const key of keys) {
     const coolUntil = keyCooldowns.get(key) ?? 0;
     if (now >= coolUntil) return { key, waitMs: 0 };
   }
-  // All keys are cooling — pick the one that cools down soonest
   let soonestKey = keys[0];
   let soonestTime = keyCooldowns.get(keys[0]) ?? 0;
   for (const key of keys) {
@@ -66,10 +65,21 @@ function getAvailableKey(keys: string[]): { key: string; waitMs: number } {
   return { key: soonestKey, waitMs: Math.max(0, soonestTime - now) };
 }
 
+function getAvailableGroqKey(keys: string[]): string | null {
+  const now = Date.now();
+  // Try to find an available (non-cooling) key, shuffled for load balancing
+  const shuffled = [...keys].sort(() => Math.random() - 0.5);
+  for (const key of shuffled) {
+    const coolUntil = groqCooldowns.get(key) ?? 0;
+    if (now >= coolUntil) return key;
+  }
+  return null; // All Groq keys are cooling — fall back to Gemini
+}
+
 function parseRetryAfterMs(errorMessage: string): number {
   const match = errorMessage.match(/Please retry in ([0-9.]+)s/);
-  if (match) return (parseFloat(match[1]) + 2) * 1000; // add 2s buffer
-  return 65000; // default 65 second fallback
+  if (match) return (parseFloat(match[1]) + 2) * 1000;
+  return 65000;
 }
 
 
@@ -105,29 +115,39 @@ CRITICAL RULES:
 Return ONLY a JSON object with this exact shape (no markdown):
 {"syntax_errors": 0, "logical_errors": 0, "logic_correct": true, "output_correct": true, "feedback": "Strict feedback on what is broken, especially pointing out syntax errors if any."}`;
 
-  // --- Try Groq FIRST (faster, higher limits) ---
+  // --- Try Groq FIRST (faster, higher limits, smart key rotation) ---
   if (groqKeys.length > 0) {
-    const groqKey = groqKeys[Math.floor(Math.random() * groqKeys.length)];
-    try {
-      const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${groqKey}` },
-        body: JSON.stringify({
-          model: "qwen/qwen3.8-27b",
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0,
-        }),
-        signal: AbortSignal.timeout(30_000),
-      });
-      const groqPayload = await groqResponse.json() as any;
-      if (groqResponse.ok && groqPayload.choices?.[0]?.message?.content) {
-        const r2parsed = evaluationSchema.parse(JSON.parse(extractJson(groqPayload.choices[0].message.content)));
-        console.log(`[Round2 Eval] Groq: syntax_errors=${r2parsed.syntax_errors} logical_errors=${r2parsed.logical_errors}`);
-        return r2parsed;
+    const groqKey = getAvailableGroqKey(groqKeys);
+    if (groqKey) {
+      try {
+        const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${groqKey}` },
+          body: JSON.stringify({
+            model: "qwen/qwen3.8-27b",
+            messages: [{ role: "user", content: prompt }],
+            temperature: 0,
+            max_tokens: 250,
+          }),
+          signal: AbortSignal.timeout(30_000),
+        });
+        const groqPayload = await groqResponse.json() as any;
+        if (groqResponse.ok && groqPayload.choices?.[0]?.message?.content) {
+          const r2parsed = evaluationSchema.parse(JSON.parse(extractJson(groqPayload.choices[0].message.content)));
+          console.log(`[Round2 Eval] Groq: syntax_errors=${r2parsed.syntax_errors} logical_errors=${r2parsed.logical_errors}`);
+          return r2parsed;
+        }
+        if (groqResponse.status === 429) {
+          groqCooldowns.set(groqKey, Date.now() + 65000);
+          console.warn(`[Round2 Eval] Groq key rate limited, cooling for 65s, falling back to Gemini...`);
+        } else {
+          console.warn(`[Round2 Eval] Groq failed (${groqResponse.status}), falling back to Gemini...`);
+        }
+      } catch (groqError) {
+        console.warn(`[Round2 Eval] Groq error, falling back to Gemini...`, groqError instanceof Error ? groqError.message : groqError);
       }
-      console.warn(`[Round2 Eval] Groq failed (${groqResponse.status}), falling back to Gemini...`);
-    } catch (groqError) {
-      console.warn(`[Round2 Eval] Groq error, falling back to Gemini...`, groqError instanceof Error ? groqError.message : groqError);
+    } else {
+      console.warn(`[Round2 Eval] All Groq keys cooling, falling back to Gemini...`);
     }
   }
 
@@ -206,31 +226,41 @@ Award 0 marks if the explanation is irrelevant or wrong.
 
 Return ONLY JSON: {"explanation_score": 0, "feedback": "one sentence"}`;
 
-  // --- Try Groq FIRST (10x faster, 30 RPM per key) ---
+  // --- Try Groq FIRST (10x faster, smart key rotation) ---
   if (groqKeys.length > 0) {
-    const groqKey = groqKeys[Math.floor(Math.random() * groqKeys.length)];
-    try {
-      const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${groqKey}` },
-        body: JSON.stringify({
-          model: "qwen/qwen3.8-27b",
-          messages: [{ role: "user", content: explanationPrompt }],
-          temperature: 0,
-        }),
-        signal: AbortSignal.timeout(15_000),
-      });
-      const groqPayload = await groqResponse.json() as any;
-      if (groqResponse.ok && groqPayload.choices?.[0]?.message?.content) {
-        const raw = JSON.parse(extractJson(groqPayload.choices[0].message.content));
-        const explanationScore = Math.min(3, Math.max(0, Number(raw.explanation_score ?? 0)));
-        const totalScore = codeScore + explanationScore;
-        console.log(`[Round1 Eval] Groq: codeScore=${codeScore} explanationScore=${explanationScore} total=${totalScore}`);
-        return { score: totalScore, feedback: `Code (${codeScore}/7): ${codeScore === 7 ? "Correct fix." : "Incorrect fix."} Explanation (${explanationScore}/3): ${raw.feedback ?? ""}` };
+    const groqKey = getAvailableGroqKey(groqKeys);
+    if (groqKey) {
+      try {
+        const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${groqKey}` },
+          body: JSON.stringify({
+            model: "qwen/qwen3.8-27b",
+            messages: [{ role: "user", content: explanationPrompt }],
+            temperature: 0,
+            max_tokens: 150,
+          }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        const groqPayload = await groqResponse.json() as any;
+        if (groqResponse.ok && groqPayload.choices?.[0]?.message?.content) {
+          const raw = JSON.parse(extractJson(groqPayload.choices[0].message.content));
+          const explanationScore = Math.min(3, Math.max(0, Number(raw.explanation_score ?? 0)));
+          const totalScore = codeScore + explanationScore;
+          console.log(`[Round1 Eval] Groq: codeScore=${codeScore} explanationScore=${explanationScore} total=${totalScore}`);
+          return { score: totalScore, feedback: `Code (${codeScore}/7): ${codeScore === 7 ? "Correct fix." : "Incorrect fix."} Explanation (${explanationScore}/3): ${raw.feedback ?? ""}` };
+        }
+        if (groqResponse.status === 429) {
+          groqCooldowns.set(groqKey, Date.now() + 65000);
+          console.warn(`[Round1 Eval] Groq key rate limited, cooling for 65s, trying next key or falling back to Gemini...`);
+        } else {
+          console.warn(`[Round1 Eval] Groq failed (${groqResponse.status}), falling back to Gemini...`);
+        }
+      } catch (groqError) {
+        console.warn(`[Round1 Eval] Groq error, falling back to Gemini...`, groqError instanceof Error ? groqError.message : groqError);
       }
-      console.warn(`[Round1 Eval] Groq failed (${groqResponse.status}): ${JSON.stringify(groqPayload?.error ?? groqPayload)}, falling back to Gemini...`);
-    } catch (groqError) {
-      console.warn(`[Round1 Eval] Groq error, falling back to Gemini...`, groqError instanceof Error ? groqError.message : groqError);
+    } else {
+      console.warn(`[Round1 Eval] All Groq keys cooling, falling back to Gemini...`);
     }
   }
 
