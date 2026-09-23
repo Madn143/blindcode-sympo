@@ -326,21 +326,32 @@ function Dashboard({
     </div>
   );
 }
-function ScoreCards({ scores }: { scores: ParticipantEvent["scores"] }) {
+function ScoreCards({ data }: { data: ParticipantEvent }) {
+  const r1Completed = data.profile.round1Completed;
+  const r2Completed = data.settings.round2Finished && r1Completed;
+
+  if (!r1Completed && !r2Completed) return null;
+
   return (
     <div className="score-grid">
-      <div>
-        <h3>Round 1</h3>
-        <strong>{scores.round1} / 100</strong>
-      </div>
-      <div>
-        <h3>Round 2</h3>
-        <strong>{scores.round2} / 100</strong>
-      </div>
-      <div>
-        <h3>Total</h3>
-        <strong>{scores.total} / 200</strong>
-      </div>
+      {r1Completed && (
+        <div>
+          <h3>Round 1</h3>
+          <strong>{data.scores.round1} / 100</strong>
+        </div>
+      )}
+      {r2Completed && (
+        <div>
+          <h3>Round 2</h3>
+          <strong>{data.scores.round2} / 100</strong>
+        </div>
+      )}
+      {(r1Completed && r2Completed) && (
+        <div>
+          <h3>Total</h3>
+          <strong>{data.scores.total} / 200</strong>
+        </div>
+      )}
     </div>
   );
 }
@@ -371,6 +382,8 @@ function EventPage({
   const [completion, setCompletion] = useState<{ score: number; qualified: boolean } | null>(null);
   const [exitWarning, setExitWarning] = useState("");
   const exitCount = useState({ value: 0 })[0];
+  const [savedQuestions, setSavedQuestions] = useState<Set<string>>(new Set());
+  const [evaluating, setEvaluating] = useState<Record<string, boolean>>({});
   useEffect(() => {
     const enterExam = () => document.documentElement.requestFullscreen?.().catch(() => undefined);
     const onFullscreenChange = () => {
@@ -383,15 +396,32 @@ function EventPage({
         else { setExitWarning("The round was reset because fullscreen was exited twice."); setPage("dashboard"); }
       }
     };
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        exitCount.value += 1;
+        if (exitCount.value === 1) {
+          setExitWarning("Warning: Tab switching is not allowed. Do it again and you will be kicked out.");
+        } else {
+          setExitWarning("You were kicked out for switching tabs multiple times.");
+          setPage("dashboard");
+        }
+      }
+    };
     const blockExamActions = (event: MouseEvent | KeyboardEvent) => {
       if (event instanceof MouseEvent) event.preventDefault();
       if (event instanceof KeyboardEvent && (event.key === "F12" || (event.ctrlKey && event.shiftKey && ["i", "j", "c"].includes(event.key.toLowerCase())))) event.preventDefault();
     };
     enterExam();
     document.addEventListener("fullscreenchange", onFullscreenChange);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     document.addEventListener("contextmenu", blockExamActions as EventListener);
     document.addEventListener("keydown", blockExamActions as EventListener);
-    return () => { document.removeEventListener("fullscreenchange", onFullscreenChange); document.removeEventListener("contextmenu", blockExamActions as EventListener); document.removeEventListener("keydown", blockExamActions as EventListener); };
+    return () => { 
+      document.removeEventListener("fullscreenchange", onFullscreenChange); 
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      document.removeEventListener("contextmenu", blockExamActions as EventListener); 
+      document.removeEventListener("keydown", blockExamActions as EventListener); 
+    };
   }, [exitCount, setPage]);
   useEffect(() => {
     Promise.all([
@@ -421,9 +451,10 @@ function EventPage({
   }
   async function submit1(question: Question) {
     const current = value(question.id, old1.get(question.id));
+    setEvaluating((prev) => ({ ...prev, [question.id]: true }));
     setMessage("");
     try {
-      await api("/submissions/round1", {
+      await api<{ score: number; feedback?: string }>("/submissions/round1", {
         method: "POST",
         body: JSON.stringify({
           questionId: question.id,
@@ -431,17 +462,20 @@ function EventPage({
           description: current.description,
         }),
       });
-      setMessage("Answer saved successfully.");
+      setSavedQuestions((prev) => new Set(prev).add(question.id));
       onRefresh();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "Invalid submission.");
+    } finally {
+      setEvaluating((prev) => ({ ...prev, [question.id]: false }));
     }
   }
   async function submit2(question: Question) {
     const current = value(question.id, old2.get(question.id));
     setMessage("");
+    setEvaluating((prev) => ({ ...prev, [question.id]: true }));
     try {
-      const result = await api<{ score: number; feedback?: string }>(
+      const result = await api<{ submitted: boolean; submissionCount: number; maxAttempts: number; score?: number }>(
         "/submissions/round2",
         {
           method: "POST",
@@ -451,12 +485,12 @@ function EventPage({
           }),
         },
       );
-      setMessage(
-        `Evaluation completed. Score: ${result.score} / 25. ${result.feedback ?? ""}`,
-      );
+      setMessage(`Answer submitted (${result.submissionCount}/${result.maxAttempts} attempts used).`);
       onRefresh();
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Evaluation failed.");
+      setMessage(err instanceof Error ? err.message : "Submission failed.");
+    } finally {
+      setEvaluating((prev) => ({ ...prev, [question.id]: false }));
     }
   }
   async function completeRound1() {
@@ -493,7 +527,7 @@ function EventPage({
             BLIND <span>CODING</span>
           </h1>
           <p>Debug. Think. Code. Compete.</p>
-          <ScoreCards scores={data.scores} />
+          <ScoreCards data={data} />
         </section>
         {message && (
           <div className="alert-success event-message">{message}</div>
@@ -511,20 +545,16 @@ function EventPage({
               text="Please wait for the administrator to start the round."
             />
           ) : (
-            questions1.map((question) => {
+            questions1.map((question, index) => {
               const old = old1.get(question.id);
               const current = value(question.id, old);
               return (
                 <article className="question-card" key={question.id}>
                   <div className="question-top">
-                    <b>Question {question.questionNo}</b>
+                    <b>Question {index + 1}</b>
                   </div>
                   <pre>{question.code}</pre>
-                  <div className="description">
-                    <b>Error Description:</b>
-                    <br />
-                    {question.description}
-                  </div>
+
                   <label>Enter the corrected code — 10 Marks</label>
                   <input
                     className="legacy-input"
@@ -533,6 +563,9 @@ function EventPage({
                     onChange={(e) =>
                       update(question.id, "correctedLine", e.target.value)
                     }
+                    onCopy={(e) => e.preventDefault()}
+                    onPaste={(e) => e.preventDefault()}
+                    onCut={(e) => e.preventDefault()}
                   />
                   <label>Explanation</label>
                   <textarea
@@ -542,17 +575,22 @@ function EventPage({
                     onChange={(e) =>
                       update(question.id, "description", e.target.value)
                     }
+                    onCopy={(e) => e.preventDefault()}
+                    onPaste={(e) => e.preventDefault()}
+                    onCut={(e) => e.preventDefault()}
                   />
                   <button
                     className="gradient-button small"
                     onClick={() => submit1(question)}
+                    disabled={!!evaluating[question.id]}
                   >
-                    Save Answer
+                    {evaluating[question.id] ? "Evaluating..." : "Save Answer"}
                   </button>
-                  {old && (
-                    <div className="saved">
-                      ✓ Answer saved — Score: {old.score ?? 0} / 10
-                    </div>
+                  {evaluating[question.id] && (
+                    <div className="saved">⏳ Evaluating with Gemini, please wait (this may take up to a minute during high traffic)...</div>
+                  )}
+                  {!evaluating[question.id] && (savedQuestions.has(question.id) || old) && (
+                    <div className="saved">✓ Answer saved — your score will be revealed after Round 1 is complete.</div>
                   )}
                 </article>
               );
@@ -562,7 +600,7 @@ function EventPage({
         </section>}
         {round === "round2" && <section className="round-section">
           <div className="round-heading">
-            <h2>Round 2 — Blind Coding</h2>
+            <h2>Round 2 — Write Code</h2>
             <span
               className={
                 data.settings.round2Started ? "live-badge" : "locked-badge"
@@ -579,66 +617,90 @@ function EventPage({
               text="The administrator has not started Round 2 yet. Please wait for the admin to activate the round."
             />
           ) : (
-            questions2.map((question) => {
-              const old = old2.get(question.id);
-              const current = value(question.id, old);
-              return (
-                <article className="question-card" key={question.id}>
-                  <div className="question-top">
-                    <b>Question {question.questionNo}</b>
-                  </div>
-                  <h3>{question.question}</h3>
-                  <div className="description">
-                    <b>Input / Test Cases:</b>
-                    <br />
-                    {question.testCases}
-                  </div>
-                  <label>Type your code</label>
-                  <div className="blind-wrapper">
-                    <span>BLIND CODE</span>
-                    <textarea
-                      className="legacy-input code-input"
-                      placeholder="Type your answer here..."
-                      value={current.answer}
-                      onChange={(e) =>
-                        update(question.id, "answer", e.target.value)
-                      }
-                    />
-                  </div>
-                  <button
-                    className="gradient-button small"
-                    onClick={() => submit2(question)}
-                  >
-                    Submit for AI Evaluation
-                  </button>
-                  {old && old.evaluated ? (
-                    <div className="evaluation">
-                      <b>AI Evaluation</b>
-                      <br />
-                      <br />
-                      Score: <strong>{old.score ?? 0} / 25</strong>
-                      <br />
-                      Syntax Errors: {old.syntaxErrors ?? 0}
-                      <br />
-                      Logical Errors: {old.logicalErrors ?? 0}
-                      <br />
-                      <br />
-                      {old.aiFeedback}
+            <>
+              <R2Timer settings={data.settings} />
+              {questions2.map((question, index) => {
+                const old = old2.get(question.id);
+                const current = value(question.id, old);
+                const attempts = old?.submissionCount ?? 0;
+                const MAX_ATTEMPTS = 2;
+                const attemptsLeft = Math.max(0, MAX_ATTEMPTS - attempts);
+                const timedOut = (() => {
+                  if (!data.settings.round2StartedAt || !data.settings.round2DurationMinutes) return false;
+                  return (Date.now() - data.settings.round2StartedAt) / 60000 > data.settings.round2DurationMinutes;
+                })();
+                const canSubmit = attemptsLeft > 0 && !timedOut && !evaluating[question.id];
+                return (
+                  <article className="question-card" key={question.id}>
+                    <div className="question-top">
+                      <b>Question {index + 1}</b>
+                      <span className={attemptsLeft === 0 ? "attempts-badge exhausted" : "attempts-badge"}>
+                        {attemptsLeft === 0 ? "No attempts left" : `${attemptsLeft} attempt${attemptsLeft !== 1 ? "s" : ""} remaining`}
+                      </span>
                     </div>
-                  ) : (
-                    old && (
-                      <div className="waiting">
-                        ⏳ Waiting for evaluation...
+                    <h3>{question.question}</h3>
+
+                    <label>Type your code</label>
+                    <div className="blind-wrapper">
+                      <span>BLIND CODE</span>
+                      <textarea
+                        className="legacy-input code-input"
+                        placeholder="Type your answer here..."
+                        value={current.answer}
+                        onChange={(e) =>
+                          update(question.id, "answer", e.target.value)
+                        }
+                        onCopy={(e) => e.preventDefault()}
+                        onPaste={(e) => e.preventDefault()}
+                        onCut={(e) => e.preventDefault()}
+                        disabled={!canSubmit}
+                      />
+                    </div>
+                    <button
+                      className="gradient-button small"
+                      onClick={() => submit2(question)}
+                      disabled={!canSubmit}
+                    >
+                      {evaluating[question.id] ? "Submitting..." : attemptsLeft === 0 ? "Attempts Exhausted" : "Submit for Evaluation"}
+                    </button>
+                    {attempts > 0 && (
+                      <div className="saved">
+                        {data.settings.round2Finished
+                          ? old?.evaluated
+                            ? `✓ Score: ${old.score ?? 0} / 25 — ${old.aiFeedback ?? ""}`
+                            : "⏳ Awaiting evaluation..."
+                          : `✓ Answer submitted (${attempts}/${MAX_ATTEMPTS} attempts used) — scores will be revealed after Round 2 is complete.`
+                        }
                       </div>
-                    )
-                  )}
-                </article>
-              );
-            })
+                    )}
+                  </article>
+                );
+              })}
+            </>
           )}
         </section>}
       </div>
     </>
+  );
+}
+function R2Timer({ settings }: { settings: import("./types").EventSettings }) {
+  const [secsLeft, setSecsLeft] = useState<number | null>(null);
+  useEffect(() => {
+    if (!settings.round2StartedAt || !settings.round2DurationMinutes) { setSecsLeft(null); return; }
+    const endMs = settings.round2StartedAt + settings.round2DurationMinutes * 60000;
+    const tick = () => setSecsLeft(Math.max(0, Math.floor((endMs - Date.now()) / 1000)));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [settings.round2StartedAt, settings.round2DurationMinutes]);
+  if (secsLeft === null) return null;
+  const mins = Math.floor(secsLeft / 60);
+  const secs = secsLeft % 60;
+  const urgent = secsLeft <= 300;
+  return (
+    <div className={urgent ? "r2-timer urgent" : "r2-timer"}>
+      ⏱ Time Remaining: {secsLeft === 0 ? "Time's up!" : `${mins}:${String(secs).padStart(2, "0")}`}
+    </div>
   );
 }
 function Locked({ title, text }: { title: string; text: string }) {
@@ -652,13 +714,75 @@ function Locked({ title, text }: { title: string; text: string }) {
 }
 function Round1Result({ data, setPage }: { data: ParticipantEvent; setPage: (page: Page) => void }) {
   const qualified = data.profile.round1Qualified === true;
-  return <><Header profile={data.profile} onHome={() => setPage("dashboard")} onSignOut={() => signOut(clientAuth)} /><main className="dashboard-main"><div className="dashboard-card"><div className="badge">Round 1 Evaluation</div><h1>{qualified ? "You qualified!" : "Round 1 complete"}</h1><p>Your Round 1 score is <strong>{data.scores.round1} / 100</strong>. The qualifying threshold is above 40%.</p><div className={qualified ? "alert-success" : "alert-error"}>{qualified ? "PASS — you can continue to Round 2 when the administrator starts it." : "FAIL — you did not qualify for Round 2."}</div>{qualified && <button className="gradient-button" disabled={!data.settings.round2Started} onClick={() => setPage("round2")}>{data.settings.round2Started ? "NEXT: ROUND 2" : "WAIT FOR ROUND 2"}</button>}</div></main></>;
+  const [questions, setQuestions] = useState<Question[]>([]);
+
+  useEffect(() => {
+    api<Question[]>("/questions/round1")
+      .then(setQuestions)
+      .catch(console.error);
+  }, []);
+
+  // Sort answers to match the user's specific question order
+  const sortedAnswers = [...data.round1Answers].sort((a, b) => {
+    const idxA = questions.findIndex(q => q.id === a.questionId);
+    const idxB = questions.findIndex(q => q.id === b.questionId);
+    return (idxA >= 0 ? idxA : 999) - (idxB >= 0 ? idxB : 999);
+  });
+
+  return (
+    <>
+      <Header profile={data.profile} onHome={() => setPage("dashboard")} onSignOut={() => signOut(clientAuth)} />
+      <main className="dashboard-main">
+        <div className="dashboard-card" style={{ maxWidth: 760, textAlign: "left" }}>
+          <div className="badge" style={{ display: "block", textAlign: "center", marginBottom: 8 }}>Round 1 Evaluation</div>
+          <h1 style={{ textAlign: "center" }}>{qualified ? "You qualified!" : "Round 1 complete"}</h1>
+          <p style={{ textAlign: "center" }}>Your Round 1 score is <strong>{data.scores.round1} / 100</strong>. The qualifying threshold is above 40%.</p>
+          <div className={qualified ? "alert-success" : "alert-error"} style={{ textAlign: "center" }}>
+            {qualified ? "PASS — you can continue to Round 2 when the administrator starts it." : "FAIL — you did not qualify for Round 2."}
+          </div>
+          {sortedAnswers.length > 0 && questions.length > 0 && (
+            <div className="r1-breakdown">
+              <h3>Score Breakdown</h3>
+              <table className="r1-table">
+                <thead>
+                  <tr><th>Question</th><th>Your Answer</th><th>Score</th><th>Feedback</th></tr>
+                </thead>
+                <tbody>
+                  {sortedAnswers.map((a, i) => {
+                    const qIndex = questions.findIndex(q => q.id === a.questionId);
+                    const qLabel = qIndex >= 0 ? `Q${qIndex + 1}` : `Q?`;
+                    return (
+                      <tr key={a.questionId ?? i}>
+                        <td>{qLabel}</td>
+                        <td><code>{a.correctedLine ?? "—"}</code></td>
+                        <td className={Number(a.score) >= 7 ? "score-good" : Number(a.score) >= 4 ? "score-mid" : "score-bad"}>
+                          {a.score ?? 0} / 10
+                        </td>
+                        <td>{(a as Record<string, unknown>).feedback as string ?? "—"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {qualified && (
+            <div style={{ textAlign: "center", marginTop: 24 }}>
+              <button className="gradient-button" disabled={!data.settings.round2Started} onClick={() => setPage("round2")}>
+                {data.settings.round2Started ? "NEXT: ROUND 2" : "WAIT FOR ROUND 2"}
+              </button>
+            </div>
+          )}
+        </div>
+      </main>
+    </>
+  );
 }
 function QuestionEditor({ round, question, onChange, onSave }: { round: "round1" | "round2"; question: Question; onChange: (question: Question) => void; onSave: () => void }) {
   const field = (key: keyof Question, label: string, multiline = false) => multiline
     ? <label>{label}<textarea className="legacy-input code-input" value={String(question[key] ?? "")} onChange={(event) => onChange({ ...question, [key]: event.target.value })} /></label>
     : <label>{label}<input className="legacy-input" value={String(question[key] ?? "")} onChange={(event) => onChange({ ...question, [key]: event.target.value })} /></label>;
-  return <article className="question-editor"><b>Question {question.questionNo}</b>{round === "round1" ? <>{field("code", "Code", true)}{field("correctedLine", "Corrected code")}{field("description", "Description", true)}</> : <>{field("question", "Prompt", true)}{field("starterCode", "Starter code", true)}{field("expectedAnswer", "Expected answer", true)}{field("testCases", "Test cases", true)}</>}<button className="gradient-button small" onClick={onSave}>Save Question</button></article>;
+  return <article className="question-editor"><b>Question {question.questionNo}</b>{round === "round1" ? <>{field("code", "Code", true)}{field("correctedLine", "Corrected code")}{field("description", "Description", true)}</> : <>{field("question", "Prompt", true)}{field("starterCode", "Starter code (optional)", true)}{field("expectedAnswer", "Expected Answer / Behavior", true)}</>}<button className="gradient-button small" onClick={onSave}>Save Question</button></article>;
 }
 function AdminPage({
   setPage,
@@ -678,6 +802,7 @@ function AdminPage({
   const [questions1, setQuestions1] = useState<Question[]>([]);
   const [questions2, setQuestions2] = useState<Question[]>([]);
   const [message, setMessage] = useState("");
+  const [round2Duration, setRound2Duration] = useState(60);
   async function refresh() {
     try {
       const [event, leaderboard, passed, one, two] = await Promise.all([
@@ -716,7 +841,7 @@ function AdminPage({
   async function saveQuestion(round: "round1" | "round2", question: Question) {
     const body = round === "round1"
       ? { questionNo: question.questionNo, language: question.language, code: question.code ?? "", correctedLine: question.correctedLine ?? "", description: question.description ?? "" }
-      : { questionNo: question.questionNo, language: question.language, question: question.question ?? "", starterCode: question.starterCode ?? "", expectedAnswer: question.expectedAnswer ?? "", testCases: question.testCases ?? "" };
+      : { questionNo: question.questionNo, language: question.language, question: question.question ?? "", starterCode: question.starterCode ?? "", expectedAnswer: question.expectedAnswer ?? "" };
     try { await api(`/admin/questions/${round}/${question.id}`, { method: "PATCH", body: JSON.stringify(body) }); setMessage(`Question ${question.questionNo} updated.`); } catch (err) { setMessage(err instanceof Error ? err.message : "Question update failed."); }
   }
   return (
@@ -769,14 +894,28 @@ function AdminPage({
             </button>
           )}
           {!settings.round2Started ? (
-            <button
-              className="control-start"
-              onClick={() =>
-                update({ round2Started: true }, "Round 2 has been started.")
-              }
-            >
-              ▶ START ROUND 2
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <label style={{ color: "#d4c9a0", fontSize: "0.85rem", whiteSpace: "nowrap" }}>
+                Duration (min):
+                <input
+                  type="number"
+                  min={5}
+                  max={180}
+                  value={round2Duration}
+                  onChange={(e) => setRound2Duration(Math.max(1, Number(e.target.value)))}
+                  className="legacy-input"
+                  style={{ width: 70, marginLeft: 8 }}
+                />
+              </label>
+              <button
+                className="control-start"
+                onClick={() =>
+                  update({ round2Started: true, round2DurationMinutes: round2Duration }, `Round 2 has been started (${round2Duration} min).`)
+                }
+              >
+                ▶ START ROUND 2
+              </button>
+            </div>
           ) : (
             <button
               className="control-stop"
@@ -867,7 +1006,13 @@ function AdminStat({
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
-  const [page, setPage] = useState<Page>("home");
+  const [page, setPage] = useState<Page>(() => {
+    return (sessionStorage.getItem("app_page") as Page) || "home";
+  });
+
+  useEffect(() => {
+    sessionStorage.setItem("app_page", page);
+  }, [page]);
   const [event, setEvent] = useState<ParticipantEvent | null>(null);
   async function loadEvent() {
     const next = await api<ParticipantEvent>("/me/event");
@@ -881,7 +1026,11 @@ export default function App() {
           const result = await getIdTokenResult(next);
           const admin = result.claims.role === "admin";
           setIsAdmin(admin);
-          setPage(admin ? "admin" : "dashboard");
+          setPage((prevPage) => {
+            if (admin) return "admin";
+            if (prevPage === "login" || prevPage === "register" || prevPage === "home") return "dashboard";
+            return prevPage;
+          });
           if (!admin) loadEvent().catch(() => undefined);
         } else {
           setIsAdmin(false);
@@ -905,6 +1054,7 @@ export default function App() {
   if (page === "round1" || page === "round2")
     return (
       <EventPage
+        key={page}
         data={event}
         setPage={setPage}
         onRefresh={() => loadEvent().catch(() => undefined)}
