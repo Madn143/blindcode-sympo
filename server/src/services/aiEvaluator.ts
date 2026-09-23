@@ -87,33 +87,44 @@ export async function evaluateRound2Answer(input: EvaluationInput): Promise<Eval
   const apiKeys = process.env.GEMINI_API_KEY?.split(",").map(k => k.trim()).filter(Boolean);
   const groqKeys = process.env.GROQ_API_KEY?.split(",").map(k => k.trim()).filter(Boolean) ?? [];
 
-  const prompt = `You are an extremely strict and unforgiving programming competition judge evaluating a student's code submission.
+  const prompt = `You are a programming competition judge evaluating a student's code submission for a BLIND CODING event (students type without seeing the screen, so minor formatting differences are expected).
 
 Question / Task: ${input.question}
-${input.starterCode ? `Reference / Starter Code (${input.language}):\n---\n${input.starterCode}\n---\n` : ""}What a correct solution should do: ${input.expectedAnswer}
+${input.starterCode ? `Reference / Starter Code (${input.language}):\n---\n${input.starterCode}\n---\n` : ""}What the correct solution should accomplish (logic description): ${input.expectedAnswer}
 
 Student's submitted code:
 ---
 ${input.answer}
 ---
 
-Your job is to act like a compiler and a strict logic judge:
-1. Identify the programming language the student used (any language is acceptable).
-2. Look for SYNTAX ERRORS (e.g., missing colons in Python, missing quotes, unclosed parentheses, missing semicolons in C/JS, indentation errors, using 'return' outside a function). EVERY SINGLE syntax error costs 2 marks. Be extremely strict. If it won't compile or run, you MUST count the syntax errors!
-3. Look for LOGICAL ERRORS (wrong algorithm, wrong mathematical approach, incorrect result). Each logical error costs 10 marks.
-4. Judge whether the student's approach correctly solves the described problem.
+Your job is to judge LOGIC and SYNTAX only:
+
+SYNTAX ERRORS (each costs 2 marks):
+- Unclosed parentheses, brackets, or braces
+- Unclosed string literals
+- Missing semicolons in C/C++/Java/JavaScript where required
+- Using 'return' outside a function
+- Truly broken syntax that prevents compilation/execution
+- DO NOT count indentation as a syntax error (students type blind)
+- DO NOT count missing colons if they are clearly present in the code
+
+LOGICAL ERRORS (each costs 10 marks):
+- Wrong algorithm or mathematical approach
+- The code cannot produce the correct result for any input
+- Completely missing the required logic
+
+CRITICAL RULES:
+- Accept ANY programming language
+- DO NOT penalise for output string casing differences (e.g. "even" vs "Even" is NOT an error)
+- DO NOT penalise for extra print statements or minor formatting
+- DO NOT compare against the exact wording of expected output — judge whether the ALGORITHM is correct
+- If the logic is fundamentally correct, set logical_errors=0 even if output formatting differs
+- If the submission is completely empty or clearly not an attempt, set logical_errors=10
 
 Scoring: start from 25, subtract (syntax_errors * 2) + (logical_errors * 10). Minimum score is 0.
 
-CRITICAL RULES:
-- Accept ANY programming language. Do NOT penalise for using a different language.
-- DO NOT be lenient on syntax. If a colon is missing in Python (e.g., 'else' instead of 'else:'), that is a syntax error. If a string is unclosed (e.g., "Even), that is a syntax error.
-- If the code contains syntax errors that would prevent it from running, you MUST count them in 'syntax_errors'.
-- If the submission is completely empty or clearly not an attempt, set syntax_errors=0, logical_errors=10.
-- Do NOT penalise for style or variable naming.
-
-Return ONLY a JSON object with this exact shape (no markdown):
-{"syntax_errors": 0, "logical_errors": 0, "logic_correct": true, "output_correct": true, "feedback": "Strict feedback on what is broken, especially pointing out syntax errors if any."}`;
+Return ONLY a JSON object (no markdown):
+{"syntax_errors": 0, "logical_errors": 0, "logic_correct": true, "output_correct": true, "feedback": "Brief feedback on the logic and any real errors found."}`;
 
   // --- Try Groq FIRST (faster, higher limits, smart key rotation) ---
   if (groqKeys.length > 0) {
