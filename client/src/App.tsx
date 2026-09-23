@@ -858,22 +858,27 @@ function AdminPage({
           <button className="control-finish" onClick={() => update({ round2Finished: true }, "Round 2 marked as finished.")}>Finish Round 2</button>
         </div>
         <div className="leaderboard">
-          <h2>Live Leaderboard <span style={{ fontSize: "0.8rem", fontWeight: 400, color: "#a09070" }}>(click a row to view per-question status)</span></h2>
+          <h2>Live Leaderboard <span style={{ fontSize: "0.8rem", fontWeight: 400, color: "#a09070" }}>(click a row or button to view per-question evaluation status)</span></h2>
           <table>
             <thead>
               <tr>
-                <th>Rank</th><th>Participant</th><th>College</th><th>Round 1</th><th>Round 2</th><th>Total</th>
+                <th>Rank</th><th>Participant</th><th>College</th><th>Round 1</th><th>Round 2</th><th>Total</th><th>Action</th>
               </tr>
             </thead>
             <tbody>
               {participants.map((participant, index) => (
-                <tr key={participant.id} onClick={() => openDetail(participant)} style={{ cursor: "pointer" }} title="Click to view evaluation details">
+                <tr key={participant.id} onClick={() => openDetail(participant)} title="Click to view evaluation details">
                   <td>#{index + 1}</td>
                   <td><strong>{participant.name}</strong></td>
                   <td>{participant.collegeName}</td>
                   <td>{participant.round1} / 100</td>
                   <td>{participant.round2} / 100</td>
                   <td className="total-score">{participant.total} / 200</td>
+                  <td>
+                    <button className="view-detail-btn" onClick={(e) => { e.stopPropagation(); openDetail(participant); }}>
+                      🔍 View Details
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
