@@ -370,6 +370,46 @@ router.get("/admin/leaderboard", requireAuth, requireRole("admin"), async (_requ
   }
 });
 
+router.get("/admin/participants/:userId/answers", requireAuth, requireRole("admin"), async (request, response) => {
+  try {
+    const userId = String(request.params.userId);
+    const [r1Snap, r2Snap, r1QSnap, r2QSnap] = await Promise.all([
+      db.collection("round1_answers").where("userId", "==", userId).get(),
+      db.collection("round2_answers").where("userId", "==", userId).get(),
+      db.collection("round1_questions").orderBy("questionNo").get(),
+      db.collection("round2_questions").orderBy("questionNo").get(),
+    ]);
+    const r1Map = new Map(r1Snap.docs.map(d => [d.data().questionId, d.data()]));
+    const r2Map = new Map(r2Snap.docs.map(d => [d.data().questionId, d.data()]));
+    const round1 = r1QSnap.docs.map((q, i) => {
+      const ans = r1Map.get(q.id);
+      return {
+        questionNo: i + 1,
+        questionId: q.id,
+        correctedLine: ans?.correctedLine ?? null,
+        score: ans?.score ?? null,
+        feedback: ans?.feedback ?? null,
+        status: !ans ? "not_answered" : ans.score === -1 ? "pending" : "evaluated",
+      };
+    });
+    const round2 = r2QSnap.docs.map((q, i) => {
+      const ans = r2Map.get(q.id);
+      return {
+        questionNo: i + 1,
+        questionId: q.id,
+        answer: ans?.answer ?? null,
+        score: ans?.score ?? null,
+        aiFeedback: ans?.aiFeedback ?? null,
+        status: !ans ? "not_answered" : ans.evaluated ? "evaluated" : "pending",
+      };
+    });
+    response.json({ round1, round2 });
+  } catch (error) {
+    console.error("Failed to load participant answers", error);
+    response.status(500).json({ error: "Unable to load participant answers." });
+  }
+});
+
 router.get("/admin/qualifiers", requireAuth, requireRole("admin"), async (_request, response) => {
   try {
     const snapshot = await db.collection("users").where("round1Qualified", "==", true).get();
